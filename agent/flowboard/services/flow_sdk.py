@@ -129,6 +129,7 @@ def resolve_omni_flash_model(duration_s: int) -> str:
 IMAGE_MODELS: dict[str, str] = {
     "NANO_BANANA_PRO": "GEM_PIX_2",
     "NANO_BANANA_2": "NARWHAL",
+    "NANO_BANANA_2_LITE": "HARBOR_SEAL",
 }
 DEFAULT_IMAGE_MODEL_KEY = "NANO_BANANA_PRO"
 

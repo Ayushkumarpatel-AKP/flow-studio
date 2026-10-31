@@ -288,7 +288,7 @@ export function Engines({ onClose }: { onClose: () => void }) {
                 );
               })}
             </div>
-            <p className="muted">Pictures and animation still use your Google Flow plan.</p>
+            <p className="muted">Pictures are drawn by Google Flow first (it tries both of its models). Your picture engine only steps in when Flow's daily limit is reached, and uses your own credits. Animation always uses Flow.</p>
           </section>
         )}
       </aside>

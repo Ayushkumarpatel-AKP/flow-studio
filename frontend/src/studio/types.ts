@@ -18,6 +18,9 @@ export type Panel = {
   sfx: string;
   sfxX?: number;
   sfxY?: number;
+  // "top" asks the picture for calm background at the top (for a long bubble). The picture still
+  // fills the frame; this is chosen by the script, not forced on every panel.
+  space?: "none" | "top";
   bubbles: Bubble[];
   mediaId?: string;
   videoId?: string;

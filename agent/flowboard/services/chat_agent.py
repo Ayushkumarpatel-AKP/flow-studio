@@ -36,6 +36,9 @@ from flowboard.short_id import generate_unique_short_id
 logger = logging.getLogger(__name__)
 
 MAX_TURNS = 12
+MAX_GENERATIONS = 6        # pictures + videos per request — each one can spend credits
+MAX_NEW_NODES = 8          # a chatty model once created a dozen notes for a "hi"
+MAX_FAILS_IN_ROW = 3       # stop and explain instead of retrying the same mistake
 _LLM_TIMEOUT_S = 120.0
 
 _NODE_TYPES = {"character", "image", "video", "prompt", "note", "merge"}
@@ -69,8 +72,19 @@ RULES
 - The reply must be in the same language as the user's message. If unsure, reply in English.
 - Node positions: x grows right, y grows down. Lay new content out
   left-to-right starting near x=0, spacing nodes ~300px apart.
-- Prefer reusing existing nodes on follow-up turns ("fix it", "regenerate"):
-  regenerate into the same node instead of creating duplicates.
+- Every node line below says what it HOLDS (a picture, a video or nothing) and what it
+  looks like. Use that. To use an existing picture or video, point at its NODE by short
+  id: gen_video {"source_node_short_id": "abcd"}, gen_image {"reference_node_short_ids": [...]}.
+  NEVER invent asset ids and never ask the user for them.
+- If the user is only chatting or asking a question, answer at once with
+  {"done": true, "reply": "..."}. Create nothing.
+- A #mention marked UNKNOWN is not on this board. Do not guess and do not create anything:
+  reply with done and say it was not found.
+- Do exactly what was asked, then finish. As soon as the request is satisfied, reply
+  {"done": true, "reply": "..."}. Never repeat a tool call that already succeeded.
+- A node that already holds a picture/video is the user's work. Do not target it unless they
+  asked to redo it (then pass "replace": true). Otherwise leave node_short_id out and a new
+  node is created.
 - Keep prompts you send to gen_image/gen_video concrete and visual.
 - If a tool returns an error, adapt (fix args, try another tool) instead
   of repeating the identical call.
@@ -81,16 +95,17 @@ TOOLS
   → {"ok": true, "short_id": "abcd", "id": 7}
 - add_edge: {"from_short_id": "abcd", "to_short_id": "efgh",
   "kind": "ref"}  (kind: "ref" = use as reference)
-- gen_image: {"prompt": "...", "node_short_id": "abcd" (optional),
-  "reference_asset_ids": [1, 2] (optional, uploaded/attached images)}
-  Generates an image and binds it to the node (creates an image node
-  if none given).
-- gen_video: {"prompt": "...", "source_asset_id": 3 (REQUIRED: image or
-  video asset id used as the start frame), "node_short_id": "abcd"
-  (optional)}  Generates a video and binds it to a video node.
-- concat_videos: {"video_asset_ids": [4, 5], "node_short_id": "abcd"
-  (optional)}  Joins videos in order with ffmpeg; binds the result to
-  a merge node (created if none given).
+- gen_image: {"prompt": "...", "node_short_id": "abcd" (optional), "replace": true (only to
+  redo a node that already holds a result), "reference_node_short_ids": ["efgh"] (optional:
+  nodes whose picture should guide the new one), "reference_asset_ids": [1] (optional: only
+  asset ids that appear in the node list or attachments)}
+  Generates an image and binds it to the node (creates an image node if none given).
+- gen_video: {"prompt": "...", "source_node_short_id": "abcd" (the picture node used as the
+  start frame; or "source_asset_id": 3 from the node list), "node_short_id": "efgh"
+  (optional), "replace": true (optional)}  Generates a video and binds it to a video node.
+- concat_videos: {"video_node_short_ids": ["abcd", "efgh"] (or "video_asset_ids": [4, 5]),
+  "node_short_id": "ijkl" (optional)}  Joins videos in order with ffmpeg; binds the result
+  to a merge node (created if none given).
 - update_node: {"short_id": "abcd", "data_patch": {...}}  Shallow-merges
   data (a null value deletes the key).
 - refresh: {}  Re-reads the board (nodes/edges) after many mutations.
@@ -104,19 +119,41 @@ with source_asset_id → create_node merge → add_edge video→merge in order
 
 # ── context builder ───────────────────────────────────────────────────
 
-def _summarize_data(data: Optional[dict]) -> str:
-    if not data:
-        return ""
+def _media_ids(data: Optional[dict]) -> list[str]:
+    d = data or {}
+    out: list[str] = []
+    for m in [d.get("mediaId"), *(d.get("mediaIds") or [])]:
+        if isinstance(m, str) and m and m not in out:
+            out.append(m)
+    return out
+
+
+def _asset_map(s, nodes) -> dict[str, tuple[int, str]]:
+    """media uuid -> (Asset id, kind) for every picture/video the nodes hold."""
+    mids = {m for n in nodes for m in _media_ids(n.data)}
+    if not mids:
+        return {}
+    rows = s.exec(select(Asset).where(Asset.uuid_media_id.in_(list(mids)))).all()
+    return {r.uuid_media_id: (r.id, r.kind or "") for r in rows}
+
+
+def _describe(n, assets: dict[str, tuple[int, str]]) -> str:
+    """One line saying what a node holds, so the agent can recognise the user's own work."""
+    d = n.data or {}
     bits: list[str] = []
-    prompt = data.get("prompt")
-    if isinstance(prompt, str) and prompt:
-        bits.append(f"prompt={prompt[:120]!r}")
-    mids = data.get("mediaIds")
-    if isinstance(mids, list):
-        bits.append(f"media={len(mids)}")
-    title = data.get("title")
-    if isinstance(title, str) and title:
-        bits.append(f"title={title[:60]!r}")
+    if d.get("title"):
+        bits.append(f"title={str(d['title'])[:60]!r}")
+    if d.get("prompt"):
+        bits.append(f"prompt={str(d['prompt'])[:120]!r}")
+    if d.get("aiBrief"):
+        bits.append(f"looks_like={str(d['aiBrief'])[:140]!r}")
+    mids = _media_ids(d)
+    if mids:
+        kind = "VIDEO" if n.type in ("video", "merge") else "PICTURE"
+        aid = assets.get(mids[0], (None, ""))[0]
+        bits.append(f"HOLDS_{kind}" + (f"(asset={aid})" if aid else "") + (f" x{len(mids)}" if len(mids) > 1 else ""))
+    else:
+        bits.append("EMPTY")
     return " ".join(bits)
 
 
@@ -147,6 +184,7 @@ def build_board_context(
                 att_counts[r.message_id] = att_counts.get(r.message_id, 0) + 1
         nodes = s.exec(select(Node).where(Node.board_id == board_id)).all()
         node_by_short = {n.short_id: n for n in nodes}
+        assets = _asset_map(s, nodes)
 
     lines = [f"# Board: {board.name if board else board_id} (id={board_id})"]
     lines.append("## Recent chat (oldest → newest)")
@@ -159,14 +197,16 @@ def build_board_context(
         if n_att:
             suffix = f" [{n_att} image(s) attached]"
         lines.append(f"[{m.role}] {content}{suffix}")
-    if mentions:
+    # Every #xxxx the user typed, whether or not the UI recognised it as a node.
+    typed = list(dict.fromkeys([*mentions, *re.findall(r"#([A-Za-z0-9]{4})\b", message)]))
+    if typed:
         lines.append("## Mentions")
-        for men in mentions:
+        for men in typed:
             n = node_by_short.get(men)
             if n is not None:
-                lines.append(f"#{men} → {n.type} node {_summarize_data(n.data)}")
+                lines.append(f"#{men} → {n.type} node {_describe(n, assets)}")
             else:
-                lines.append(f"#{men} → (unknown node)")
+                lines.append(f"#{men} → UNKNOWN: there is no such node on this board. Do not guess; tell the user.")
     lines.append("## Current request")
     lines.append(message)
     if attachment_asset_ids:
@@ -194,13 +234,14 @@ def _dynamic_context(board_id: int) -> str:
             select(Edge).where(Edge.board_id == board_id).order_by(Edge.id)
         ).all()
         by_id = {n.id: n for n in nodes}
+        assets = _asset_map(s, nodes)
     lines = ["## Nodes"]
     if not nodes:
         lines.append("(board is empty)")
     for n in nodes:
         lines.append(
             f"#{n.short_id} [{n.type}] status={n.status} "
-            f"@({n.x:.0f},{n.y:.0f}) {_summarize_data(n.data)}".rstrip()
+            f"@({n.x:.0f},{n.y:.0f}) {_describe(n, assets)}".rstrip()
         )
     lines.append("## Edges")
     for e in edges:
@@ -341,30 +382,35 @@ async def _generate_media(
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
 
+def _first_json_object(text: str) -> Any:
+    """The first complete JSON object in ``text``, ignoring chatter before or after it."""
+    dec = json.JSONDecoder()
+    i = text.find("{")
+    while i != -1:
+        try:
+            obj, _end = dec.raw_decode(text[i:])
+            return obj
+        except ValueError:
+            i = text.find("{", i + 1)
+    return None
+
+
 def _parse_tool_call(raw: str) -> Optional[ToolCall]:
     text = (raw or "").strip()
     m = _FENCE_RE.search(text)
     if m:
         text = m.group(1).strip()
-    obj: Any = None
-    try:
-        obj = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        start, end = text.find("{"), text.rfind("}")
-        if 0 <= start < end:
-            try:
-                obj = json.loads(text[start : end + 1])
-            except (json.JSONDecodeError, ValueError):
-                return None
-        else:
-            return None
+    obj = _first_json_object(text)
     if not isinstance(obj, dict):
         return None
-    if obj.get("done") is True:
+    if obj.get("done") is True or str(obj.get("done")).lower() == "true":
         reply = obj.get("reply", "")
         return ToolCall(done=True, reply=reply if isinstance(reply, str) else "")
-    tool = obj.get("tool")
-    args = obj.get("args", {})
+    tool = obj.get("tool") or obj.get("name") or obj.get("action")
+    args = obj.get("args", obj.get("arguments", obj.get("parameters")))
+    if args is None:
+        # Weaker models put the arguments next to "tool" instead of inside "args".
+        args = {k: v for k, v in obj.items() if k not in ("tool", "name", "action", "args", "arguments", "parameters")}
     if not isinstance(tool, str) or not tool or not isinstance(args, dict):
         return None
     return ToolCall(tool=tool, args=args)
@@ -385,19 +431,20 @@ def _auto_pos(s, board_id: int) -> tuple[float, float]:
     return max(n.x for n in nodes) + 300.0, 0.0
 
 
-def _bind_media(node_id: int, media_ids: list[str]) -> None:
-    """Mirror the pipeline executor's binding: data.mediaIds + mediaId,
-    status → done."""
+def _bind_media(node_id: int, media_ids: list[str], *, newest_first: bool = True) -> None:
+    """Mirror the pipeline executor's binding: data.mediaIds + mediaId, status → done.
+
+    The new result goes first, so "regenerate" shows the new picture instead of
+    silently keeping the old one on top."""
     with get_session() as s:
         node = s.get(Node, node_id)
         if node is None:
             return
         data = dict(node.data or {})
-        existing = data.get("mediaIds")
-        merged = list(existing) if isinstance(existing, list) else []
-        for mid in media_ids:
-            if mid and mid not in merged:
-                merged.append(mid)
+        existing = [m for m in (data.get("mediaIds") or []) if isinstance(m, str)]
+        fresh = [m for m in media_ids if m]
+        merged = (fresh + [m for m in existing if m not in fresh]) if newest_first \
+            else (existing + [m for m in fresh if m not in existing])
         data["mediaIds"] = merged
         if merged:
             data["mediaId"] = merged[0]
@@ -405,6 +452,36 @@ def _bind_media(node_id: int, media_ids: list[str]) -> None:
         node.status = "done"
         s.add(node)
         s.commit()
+
+
+def _node_media(s, board_id: int, short_id: str, kind: str) -> tuple[Node, str]:
+    """The node and its active media id, with a message the agent can act on."""
+    node = _node_by_short(s, board_id, str(short_id))
+    if node is None:
+        raise ChatAgentError(f"node #{short_id} is not on this board — use a short id from the node list; do not guess")
+    mids = _media_ids(node.data)
+    if not mids:
+        raise ChatAgentError(f"node #{short_id} holds nothing yet; generate into it first or pick another node")
+    is_video = node.type in ("video", "merge")
+    if kind == "picture" and is_video:
+        raise ChatAgentError(f"node #{short_id} holds a video, but a picture is needed here")
+    if kind == "video" and not is_video:
+        raise ChatAgentError(f"node #{short_id} holds a picture, not a video")
+    return node, mids[0]
+
+
+def _guard_overwrite(s, board_id: int, short_id: Optional[str], replace: bool) -> None:
+    """Refuse to put a result into a node that already holds the user's work, unless asked."""
+    if not short_id:
+        return
+    node = _node_by_short(s, board_id, str(short_id))
+    if node is None:
+        raise ChatAgentError(f"node #{short_id} is not on this board — use a short id from the node list")
+    if _media_ids(node.data) and not replace:
+        raise ChatAgentError(
+            f"node #{short_id} already holds a result. Leave node_short_id out to make a new node, "
+            f'or set "replace": true only if the user asked to redo that one.'
+        )
 
 
 def _get_or_create_media_node(
@@ -513,10 +590,14 @@ async def _tool_gen_image(board_id: int, args: dict) -> dict:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ChatAgentError("prompt is required")
     ref_ids = args.get("reference_asset_ids") or []
-    if not isinstance(ref_ids, list):
-        raise ChatAgentError("reference_asset_ids must be a list")
+    ref_nodes = args.get("reference_node_short_ids") or []
+    if not isinstance(ref_ids, list) or not isinstance(ref_nodes, list):
+        raise ChatAgentError("reference_asset_ids and reference_node_short_ids must be lists")
+    target = args.get("node_short_id")
     with get_session() as s:
+        _guard_overwrite(s, board_id, target, bool(args.get("replace")))
         ref_mids = [_asset_media_id(s, int(aid), "image") for aid in ref_ids]
+        ref_mids += [_node_media(s, board_id, sid, "picture")[1] for sid in ref_nodes]
     result, error = await _generate_media("image", prompt, reference_media_ids=ref_mids or None)
     if error:
         return {"ok": False, "tool": "gen_image", "error": error}
@@ -524,28 +605,30 @@ async def _tool_gen_image(board_id: int, args: dict) -> dict:
     if not out:
         return {"ok": False, "tool": "gen_image", "error": "worker returned no media"}
     with get_session() as s:
-        node = _get_or_create_media_node(
-            s, board_id, args.get("node_short_id"), "image", prompt
-        )
+        node = _get_or_create_media_node(s, board_id, target, "image", prompt)
         node_id, short_id = node.id, node.short_id
     _bind_media(node_id, out)
-    return {
-        "ok": True,
-        "tool": "gen_image",
-        "node_short_id": short_id,
-        "media_ids": out,
-    }
+    return {"ok": True, "tool": "gen_image", "node_short_id": short_id, "media_ids": out}
 
 
 async def _tool_gen_video(board_id: int, args: dict) -> dict:
     prompt = args.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ChatAgentError("prompt is required")
+    source_node = args.get("source_node_short_id")
     source_aid = args.get("source_asset_id")
-    if source_aid is None:
-        raise ChatAgentError("source_asset_id is required (start-frame asset)")
+    if source_node is None and source_aid is None:
+        raise ChatAgentError(
+            "say which picture to start from: source_node_short_id (a node that holds a picture) "
+            "or source_asset_id from the node list"
+        )
+    target = args.get("node_short_id")
     with get_session() as s:
-        src_mid = _asset_media_id(s, int(source_aid))
+        _guard_overwrite(s, board_id, target, bool(args.get("replace")))
+        if source_node is not None:
+            src_mid = _node_media(s, board_id, source_node, "picture")[1]
+        else:
+            src_mid = _asset_media_id(s, int(source_aid))
     result, error = await _generate_media("video", prompt, source_media_ids=[src_mid])
     if error:
         return {"ok": False, "tool": "gen_video", "error": error}
@@ -553,23 +636,26 @@ async def _tool_gen_video(board_id: int, args: dict) -> dict:
     if not out:
         return {"ok": False, "tool": "gen_video", "error": "worker returned no media"}
     with get_session() as s:
-        node = _get_or_create_media_node(
-            s, board_id, args.get("node_short_id"), "video", prompt
-        )
+        node = _get_or_create_media_node(s, board_id, target, "video", prompt)
         node_id, short_id = node.id, node.short_id
     _bind_media(node_id, out)
-    return {
-        "ok": True,
-        "tool": "gen_video",
-        "node_short_id": short_id,
-        "media_ids": out,
-    }
+    return {"ok": True, "tool": "gen_video", "node_short_id": short_id, "media_ids": out}
 
 
 async def _tool_concat_videos(board_id: int, args: dict) -> dict:
-    aids = args.get("video_asset_ids") or []
-    if not isinstance(aids, list) or len(aids) < 1:
-        raise ChatAgentError("video_asset_ids must be a non-empty list")
+    aids = list(args.get("video_asset_ids") or [])
+    nodes = args.get("video_node_short_ids") or []
+    if not isinstance(aids, list) or not isinstance(nodes, list):
+        raise ChatAgentError("video_asset_ids and video_node_short_ids must be lists")
+    with get_session() as s:
+        for sid in nodes:
+            _node, mid = _node_media(s, board_id, sid, "video")
+            row = s.exec(select(Asset).where(Asset.uuid_media_id == mid)).first()
+            if row is None:
+                raise ChatAgentError(f"the video in node #{sid} has not been saved on this computer yet")
+            aids.append(row.id)
+    if not aids:
+        raise ChatAgentError("say which videos to join: video_node_short_ids or video_asset_ids")
     new_id, error = await asyncio.to_thread(
         video_concat.concat_video_assets, [int(a) for a in aids]
     )
@@ -584,12 +670,7 @@ async def _tool_concat_videos(board_id: int, args: dict) -> dict:
         out_mids = [row.uuid_media_id] if row and row.uuid_media_id else []
     if out_mids:
         _bind_media(node_id, out_mids)
-    return {
-        "ok": True,
-        "tool": "concat_videos",
-        "asset_id": new_id,
-        "node_short_id": short_id,
-    }
+    return {"ok": True, "tool": "concat_videos", "asset_id": new_id, "node_short_id": short_id}
 
 
 async def _tool_update_node(board_id: int, args: dict) -> dict:
@@ -687,7 +768,11 @@ async def _run_agent(
                     paths.append(str(Path(row.local_path).resolve()))
         attach_paths = paths or None
 
+    allow_replace = bool(_REDO_WORDS.search(message))
     observations: list[dict] = []
+    succeeded: set[str] = set()      # exact calls that already worked
+    generated_into: set[tuple[str, str]] = set()   # (tool, node) pairs already produced in this request
+    generations = new_nodes = fails_in_row = repeats = 0
     for turn in range(MAX_TURNS):
         dynamic = _dynamic_context(board_id)
         obs_text = ""
@@ -695,10 +780,16 @@ async def _run_agent(
             obs_text = "\n\n## Tool results so far\n" + json.dumps(
                 observations, ensure_ascii=False, indent=1
             )[-6000:]
+            ok_steps = [o.get("tool") for o in observations if o.get("ok")]
+            if ok_steps:
+                obs_text += (
+                    f"\n\n## Progress\n{len(ok_steps)} step(s) already done ({', '.join(map(str, ok_steps))}). "
+                    "If the user's request is now satisfied, reply with done. Do not repeat finished steps."
+                )
         user_prompt = (
             f"{static_ctx}\n\n{dynamic}{obs_text}\n\n"
             "Respond with exactly one JSON object: a tool call or "
-                '{"done": true, "reply": "..."}.'
+            '{"done": true, "reply": "..."}.'
         )
         # Attachments go to the worker on the first turn only; later turns
         # reference them by asset id (already in context).
@@ -723,10 +814,41 @@ async def _run_agent(
                     "raw": raw[:500],
                 }
             )
+            fails_in_row += 1
+            if fails_in_row >= MAX_FAILS_IN_ROW:
+                _finish_run(run_id, _stopped_message(observations, "I could not understand the AI's answers"), failed=not _any_ok(observations))
+                return
             continue
         if call.done:
-            _finish_run(run_id, call.reply or "Xong.")
+            _finish_run(run_id, call.reply or "Done.")
             return
+
+        if call.args.get("replace") and not allow_replace:
+            call.args.pop("replace")    # the user did not ask to redo anything; keep their result
+        signature = call.tool + json.dumps(call.args, sort_keys=True, default=str)
+        target = call.args.get("node_short_id")
+        # A model that is unhappy with its own result keeps re-drawing into the same node with a
+        # slightly different prompt. One result per node per request: the user can ask again.
+        already_made = call.tool in ("gen_image", "gen_video") and target and (call.tool, str(target)) in generated_into
+        if signature in succeeded or already_made:
+            # The model forgot it already did this. Do not spend credits twice.
+            repeats += 1
+            observations.append({
+                "ok": False, "tool": call.tool,
+                "error": "That step already worked in this request" + (f" (node #{target} was just generated)" if already_made else "")
+                         + ". Do not repeat it. If the request is done, reply {\"done\": true, \"reply\": \"...\"}.",
+            })
+            if repeats >= 2:
+                _finish_run(run_id, _auto_summary(observations))
+                return
+            continue
+        if call.tool in ("gen_image", "gen_video") and generations >= MAX_GENERATIONS:
+            _finish_run(run_id, _stopped_message(observations, f"I stopped after {MAX_GENERATIONS} pictures/videos to protect your credits"))
+            return
+        if call.tool == "create_node" and new_nodes >= MAX_NEW_NODES:
+            _finish_run(run_id, _stopped_message(observations, f"I stopped after {MAX_NEW_NODES} new nodes"))
+            return
+
         # One activity row per turn so the feed shows live progress.
         redacted = {
             k: (str(v)[:200] if k != "data_patch" else "{...}")
@@ -740,16 +862,58 @@ async def _run_agent(
             obs = await _execute_tool(board_id, call.tool, call.args)
             act.set_result({"ok": bool(obs.get("ok")), "tool": call.tool})
         observations.append(obs)
+        if obs.get("ok"):
+            succeeded.add(signature)
+            if call.tool in ("gen_image", "gen_video") and target:
+                generated_into.add((call.tool, str(target)))
+            fails_in_row = 0
+            generations += call.tool in ("gen_image", "gen_video")
+            new_nodes += call.tool == "create_node"
+        else:
+            fails_in_row += 1
+            if fails_in_row >= MAX_FAILS_IN_ROW:
+                _finish_run(run_id, _stopped_message(observations, f"I could not finish: {obs.get('error', 'a step failed')}"),
+                            failed=not _any_ok(observations))
+                return
 
-    _finish_run(
-        run_id,
-        "The agent ran out of thinking turns (12) before it finished. "
-        "Steps done so far:\n"
-        + "\n".join(
-            f"- {o.get('tool')}: {'ok' if o.get('ok') else o.get('error', 'fail')}"
-            for o in observations[-8:]
-        ),
-    )
+    _finish_run(run_id, _stopped_message(observations, "I ran out of steps"), failed=not _any_ok(observations))
+
+
+# Words that mean "redo that one". Without them a node's existing result is the user's work and
+# stays untouched, even if the model asks to replace it.
+_REDO_WORDS = re.compile(
+    r"regenerat|re-?do|re-?draw|re-?make|again|replace|change|update|tweak|fix|improve|darker|brighter|"
+    r"different|another version|new version|variation|variant",
+    re.I,
+)
+
+
+_STEP_WORDS = {
+    "gen_image": "drew a picture", "gen_video": "made a video", "create_node": "added a node",
+    "add_edge": "connected nodes", "concat_videos": "joined the videos", "update_node": "updated a node",
+}
+
+
+def _any_ok(observations: list[dict]) -> bool:
+    return any(o.get("ok") for o in observations)
+
+
+def _auto_summary(observations: list[dict]) -> str:
+    """A plain summary of what actually happened, for when the model never says done."""
+    counts: dict[str, int] = {}
+    for o in observations:
+        if o.get("ok"):
+            sid = o.get("node_short_id") or o.get("short_id")
+            phrase = _STEP_WORDS.get(str(o.get("tool")), str(o.get("tool"))) + (f" in #{sid}" if sid else "")
+            counts[phrase] = counts.get(phrase, 0) + 1
+    steps = [f"{ph} (×{n})" if n > 1 else ph for ph, n in counts.items()]
+    return ("Done — I " + ", then ".join(steps) + ".") if steps else "Done."
+
+
+def _stopped_message(observations: list[dict], reason: str) -> str:
+    if _any_ok(observations):
+        return f"{_auto_summary(observations)} {reason}, so I stopped there. Tell me if anything is missing."
+    return f"{reason}. Nothing was changed. Try rephrasing, or mention the node with its #id."
 
 
 async def run_chat_agent(

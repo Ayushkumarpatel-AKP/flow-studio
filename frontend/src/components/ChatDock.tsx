@@ -97,6 +97,8 @@ export function ChatDock() {
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [museAvailable, setMuseAvailable] = useState<boolean | null>(null);
+  // Nodes the user has selected on the canvas are what "this" means in a message.
+  const [ignoreSelected, setIgnoreSelected] = useState<string[]>([]);
   // The chat thinks with whichever engine the user connected in Engines (Groq, Gemini…).
   const [engine, setEngine] = useState<{ state: string; label: string | null } | null>(null);
   const [stepText, setStepText] = useState<string | null>(null);
@@ -105,6 +107,19 @@ export function ChatDock() {
   const messagesRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const resizingRef = useRef(false);
+
+  // Clicking a node's #id on the canvas drops it into the message box.
+  useEffect(() => {
+    const onMention = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id) return;
+      setCollapsed(false);
+      setText((t) => (t.includes(`#${id}`) ? t : `${t}${t && !t.endsWith(" ") ? " " : ""}#${id} `));
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    };
+    window.addEventListener("flowboard:mention", onMention);
+    return () => window.removeEventListener("flowboard:mention", onMention);
+  }, []);
 
   // Load this board's channel on switch.
   useEffect(() => {
@@ -212,6 +227,12 @@ export function ChatDock() {
     });
   }, []);
 
+  const selectedNodes = nodes
+    .filter((n) => n.selected && !ignoreSelected.includes(n.data.shortId))
+    .map((n) => ({ id: n.data.shortId, title: n.data.title as string }));
+  // a fresh selection brings back chips the user had dismissed for other nodes
+  const dismiss = (id: string) => setIgnoreSelected((x) => [...x, id]);
+
   const engineReady = engine?.state === "ok" || engine?.state === "limited";
   const chatReady = engineReady || museAvailable === true;
   const checking = engine === null && museAvailable === null;
@@ -227,7 +248,9 @@ export function ChatDock() {
   const handleSend = useCallback(async () => {
     if (!canSend || boardId === null) return;
     const known = new Set(nodes.map((n) => n.data.shortId));
-    const mentions = extractMentions(text).filter((m) => known.has(m));
+    const typed = extractMentions(text).filter((m) => known.has(m));
+    const picked = selectedNodes.filter((n) => !typed.includes(n.id)).map((n) => n.id);
+    const mentions = [...typed, ...picked];
 
     let attachmentIds: number[] = [];
     let previews: Array<{ mime: string; url: string }> = [];
@@ -247,11 +270,15 @@ export function ChatDock() {
       setFiles([]);
     }
 
-    const content =
+    let content =
       text.trim() || "Please use the attached images to do what I asked.";
+    // Say it in the message too, so the history shows what the AI was told and the AI cannot miss it.
+    if (picked.length) {
+      content += `\n[Selected on the canvas: ${picked.map((id) => "#" + id).join(", ")}]`;
+    }
     setText("");
     await sendMessage(content, mentions, attachmentIds, previews);
-  }, [canSend, boardId, nodes, text, files, sendMessage, notifyError]);
+  }, [canSend, boardId, nodes, selectedNodes, text, files, sendMessage, notifyError]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -403,6 +430,17 @@ export function ChatDock() {
           >
             📎
           </button>
+          {selectedNodes.length > 0 && (
+            <div className="chat-dock__selected" aria-label="Selected nodes the AI will use">
+              <span>Using selected:</span>
+              {selectedNodes.map((n) => (
+                <span key={n.id} className="chat-dock__chip" title={n.title}>
+                  #{n.id}{n.title ? ` · ${n.title.slice(0, 18)}` : ""}
+                  <button type="button" onClick={() => dismiss(n.id)} aria-label={`Do not use #${n.id}`}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             className="chat-dock__textarea"

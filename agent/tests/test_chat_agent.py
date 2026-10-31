@@ -330,4 +330,4 @@ def test_build_board_context_includes_history_and_nodes():
     ctx = chat_agent.build_board_context(board_id, "second", [], [])
     assert "first" in ctx
     assert "previous reply" in ctx
-    assert "#ab12" in ctx and "media=2" in ctx
+    assert "#ab12" in ctx and "HOLDS_PICTURE x2" in ctx

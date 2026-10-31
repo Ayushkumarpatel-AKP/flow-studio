@@ -1599,7 +1599,14 @@ export function NodeCard(props: NodeProps<FlowNode>) {
             </button>
           )}
         </div>
-        <span className="node-short-id">#{data.shortId}</span>
+        <span
+          className="node-short-id node-short-id--btn"
+          role="button"
+          tabIndex={0}
+          title="Click to mention this node in the chat"
+          onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent("flowboard:mention", { detail: data.shortId })); }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); window.dispatchEvent(new CustomEvent("flowboard:mention", { detail: data.shortId })); } }}
+        >#{data.shortId}</span>
       </div>
 
       {data.collapsed ? (

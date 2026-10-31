@@ -17,6 +17,7 @@ interface Props {
   onMove(i: number, d: number): void;
   onRemove(i: number): void;
   onAdd(): void;
+  onNew(): void;
   onDraw(i: number): void;
   onImprove(kind: "scene" | "dialogue", text: string, context: string, apply: (t: string) => void, key: string): void;
 }
@@ -42,6 +43,7 @@ export function Editor(p: Props) {
       <div className="ed-head">
         <input className="story-title" value={p.title} onChange={(e) => p.onTitle(e.target.value)} aria-label="Story title" />
         <span className="muted">{p.panels.filter((x) => x.mediaId).length}/{p.panels.length} drawn</span>
+        <button className="ghost" onClick={p.onNew} title="Clear this story and go back to the templates">＋ New story</button>
       </div>
 
       <div className="film" role="listbox" aria-label="Panels">
@@ -92,6 +94,12 @@ export function Editor(p: Props) {
             </span>
             <textarea rows={4} value={panel.scene} onChange={(e) => p.onPanel(i, { scene: e.target.value })} />
           </label>
+
+          <label className="check ed-space" title="The picture always fills the frame. Turn this on only for a panel with long dialogue that would cover the action.">
+            <input type="checkbox" checked={panel.space === "top"} onChange={(ev) => p.onPanel(i, { space: ev.target.checked ? "top" : "none" })} />
+            Leave calm space at the top for long dialogue
+          </label>
+          {panel.mediaId && panel.space === "top" && <p className="muted">Applies the next time you draw this panel.</p>}
 
           <label className="fld"><span>Caption (bottom strip)</span>
             <input value={panel.caption} placeholder="Narration…" onChange={(e) => p.onPanel(i, { caption: e.target.value })} />

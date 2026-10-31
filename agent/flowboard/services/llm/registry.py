@@ -85,14 +85,22 @@ async def run_llm(
     configured in the older AI Providers panel (e.g. the Claude CLI).
     """
     job = engines.FEATURE_JOBS.get(feature)
+    engine_failure: Optional[str] = None
     if job is not None:
         try:
             return await engines.chat(job, user_prompt, system_prompt=system_prompt,
                                       images=attachments, timeout=timeout)
         except engines.EngineError as exc:
             logger.debug("Engines could not serve %s (%s); using the configured provider", feature, exc)
+            if str(exc) != "no engine configured":
+                engine_failure = str(exc)   # an engine IS connected, it just did not answer
     config = secrets.read_feature_config()
     entry = config.get(feature)
+    if entry is None and engine_failure:
+        raise LLMError(
+            f"Your AI engine did not answer ({engine_failure}). "
+            "This is usually a short rate limit on a free plan — wait a few seconds and send it again."
+        )
     if entry is None:
         raise LLMError(
             f"No AI provider configured for {feature}; "

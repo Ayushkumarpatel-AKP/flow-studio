@@ -228,3 +228,100 @@
 .vb-key-row input { flex: 1; min-width: 0; padding: 7px 10px; font-size: 14px; }
 .vb-key-row button { white-space: nowrap; }
 .vb-key a { color: var(--pop-blue); }
+
+/* ── Template categories and real cover pictures ───────────────────────── */
+.tpl-cats { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.tpl-cat { padding: 6px 16px; border-radius: 99px; font-size: 15px; background: #fff; }
+.tpl-cat small { margin-left: 4px; opacity: .7; }
+.tpl-cat.on { background: var(--accent); color: #fff; text-shadow: 1px 1px 0 var(--ink); }
+.tpl { padding: 0 0 12px; overflow: hidden; }
+.tpl > .tpl-title, .tpl > .tpl-blurb, .tpl > .tpl-meta { margin-left: 14px; margin-right: 14px; }
+.tpl-cover { position: relative; display: block; aspect-ratio: 16 / 9; border-bottom: 3px solid var(--ink); background: var(--c); overflow: hidden; }
+.tpl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .25s; }
+.tpl:hover:not(:disabled) .tpl-cover img { transform: scale(1.06); }
+.tpl-cover .tpl-emoji { position: absolute; top: 8px; left: 8px; font-size: 22px; padding: 2px 8px; background: #fff; border: 2px solid var(--ink); border-radius: 99px; filter: none; line-height: 1.2; }
+.tpl-title { margin-top: 10px; }
+
+.style-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.style-tile { padding: 0; overflow: hidden; display: grid; text-align: center; }
+.style-tile img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; border-bottom: 2px solid var(--ink); }
+.style-tile span { padding: 5px 4px; font-size: 14px; }
+.style-tile.on { outline: 4px solid var(--accent); outline-offset: 1px; background: var(--pop-yellow); }
+.ed-space { font-size: 13px; align-items: flex-start; }
+
+
+/* ═════ App layout: one screen, no page scroll. Left settings · centre work · bottom actions ═════ */
+.st.st--app { height: 100vh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; padding: 0; overflow: hidden; }
+.st--app .st-top { position: static; padding: 8px 18px; padding-right: 210px; gap: 16px; }
+.st--app .st-brand { font-size: 28px; }
+.st--app .st-steps li { padding: 3px 12px 3px 5px; font-size: 14px; }
+.st--app .st-steps li b { width: 22px; height: 22px; font-size: 12px; }
+
+.st-app { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: 0; }
+.st--app .st-side {
+  position: static; max-height: none; overflow-y: auto; min-height: 0; padding: 14px; gap: 14px; align-content: start;
+  background: rgba(255, 255, 255, .55); border-right: 4px solid var(--ink);
+}
+.st--app .st-main { overflow-y: auto; min-height: 0; padding: 20px 26px 26px; min-width: 0; }
+.st--app.st--editing .st-main { overflow: hidden; padding: 12px 16px 8px; display: flex; flex-direction: column; }
+.side-credit { margin: 6px 0 0; text-align: center; font-family: var(--font-display); letter-spacing: .1em; font-size: 16px; }
+.side-credit strong { background: var(--pop-pink); color: #fff; border: 2px solid var(--ink); border-radius: 6px; padding: 0 8px; text-shadow: 1px 1px 0 var(--ink); }
+.st--app .acc > summary { font-size: 20px; padding: 10px 14px; }
+.st--app .box { box-shadow: 3px 3px 0 var(--ink); }
+
+/* Home: prompt first, templates under it */
+.start { max-width: 1180px; margin: 0 auto; display: grid; gap: 22px; }
+.start-prompt { background: #fff; border: 3px solid var(--ink); border-radius: 14px; box-shadow: 5px 5px 0 var(--ink); padding: 18px 20px; display: grid; gap: 12px; }
+.start-prompt h1 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 36px; letter-spacing: .05em; text-transform: uppercase; }
+.start-prompt textarea { width: 100%; padding: 12px 14px; font-size: 17px; resize: vertical; min-height: 64px; }
+.start-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.start-actions .go { margin-left: 0; font-size: 20px; padding: 9px 20px; }
+.start-summary { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.start-summary i { font-style: normal; font-size: 12px; padding: 2px 10px; border: 2px solid var(--ink); border-radius: 99px; background: var(--panel-high); }
+.start-tpl-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 12px; }
+.start-tpl-head h2 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 26px; letter-spacing: .06em; text-transform: uppercase; }
+.start-tpl .tpl-cats { margin: 0; }
+.st--app .tpl-cat { padding: 3px 12px; font-size: 14px; }
+.st--app .st-templates { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+.st--app .tpl { transform: none; box-shadow: 3px 3px 0 var(--ink); border-radius: 10px; padding-bottom: 8px; }
+.st--app .tpl:hover:not(:disabled) { transform: translate(-1px, -2px); box-shadow: 5px 5px 0 var(--ink); }
+.st--app .tpl-title { font-size: 21px; margin-top: 8px; }
+.st--app .tpl-cover .tpl-emoji { font-size: 16px; padding: 1px 6px; }
+
+/* Editor fits the screen: filmstrip on top, preview scaled to the free height, properties on the right */
+.st--editing .ed { flex: 1; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 8px; }
+.st--editing .ed-head { gap: 12px; }
+.st--editing .story-title { font-size: 28px; }
+.st--editing .film { padding: 2px 2px 8px; gap: 10px; }
+.st--editing .film-thumb { width: 104px; }
+.st--editing .ed-body { min-height: 0; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; }
+.st--editing .ed-stage { min-height: 0; grid-template-rows: minmax(0, 1fr) auto; align-content: start; }
+.st--editing .ed-tip { display: none; }
+.st--editing .pv { width: min(100%, calc((100vh - 360px) * var(--ar, 1.7778))); max-height: none; height: auto; margin: 0 auto; }
+.st--editing .pv--9x16 { width: min(100%, calc((100vh - 360px) * var(--ar, .5625))); height: auto; }
+.st--editing .ed-props { position: static; overflow-y: auto; max-height: 100%; min-height: 0; }
+
+/* Bottom bar sits in the grid instead of floating over the page */
+.st--app .bar { position: static; padding: 8px 18px; }
+.st--app .bar .go { font-size: 22px; padding: 8px 22px; }
+.st--app .st-foot { display: none; }
+
+/* Finished video */
+.result-back { position: fixed; inset: 0; z-index: 10000; background: rgba(18, 16, 28, .65); display: grid; place-items: center; padding: 20px; }
+.result-back .result { margin: 0; max-width: 960px; width: 100%; max-height: 94vh; overflow: auto; }
+.result-head { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.result-back video { max-height: 62vh; }
+
+/* Small screens: back to a normal scrolling page */
+@media (max-width: 1000px) {
+  .st.st--app { height: auto; overflow: visible; display: block; padding-bottom: 90px; }
+  .st--app .st-top { position: sticky; top: 0; padding-right: 18px; padding-top: 52px; }
+  .st-app { display: flex; flex-direction: column; }
+  .st--app .st-main { order: -1; }   /* the prompt and templates come first on a small screen */
+  .st--app .st-side { border-right: 0; border-bottom: 4px solid var(--ink); overflow: visible; }
+  .st--app .st-main, .st--app.st--editing .st-main { overflow: visible; padding: 16px 14px; display: block; }
+  .st--editing .ed { display: grid; }
+  .st--editing .ed-body { grid-template-columns: 1fr; }
+  .st--editing .pv, .st--editing .pv--9x16 { width: 100%; }
+  .st--app .bar { position: fixed; left: 0; right: 0; bottom: 0; }
+}

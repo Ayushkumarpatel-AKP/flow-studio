@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from flowboard.config import STORAGE_DIR
 from flowboard.services import engines, media as media_service
-from flowboard.services import studio_render, subtitles, voice
+from flowboard.services import image_engines, studio_render, subtitles, voice
 from flowboard.services.llm import run_llm
 from flowboard.services.llm.base import LLMError
 
@@ -45,27 +45,40 @@ STUDIO_DIR = STORAGE_DIR / "studio"
 _JOBS: dict[str, dict[str, Any]] = {}
 
 STYLE_PRESETS = {
-    "comic": "Western comic book panel, bold black ink outlines, halftone dot shading, flat vivid colors",
-    "stickman": "Western comic book panel, bold black ink outlines, halftone shading, simple stickman "
-                "characters with round white heads, thin black stick limbs and dot eyes",
-    "anime": "anime key visual, clean cel shading, expressive characters, vibrant colors",
-    "watercolor": "soft watercolor illustration, painterly textures, gentle colors",
+    "comic": "Western comic book illustration, bold black ink outlines, halftone dot shading, flat vivid colors",
+    "stickman": "Comic book illustration, bold black ink outlines, halftone shading, simple stickman "
+                "characters with round white heads, thin black stick limbs and dot eyes, flat vivid colors",
+    "anime": "Anime key visual, clean cel shading, expressive characters, vibrant colors",
+    "watercolor": "Soft watercolor illustration, painterly textures, gentle colors",
 }
-# Studio overlays text itself, so the image model must not draw any, and must
-# leave the top band empty for the speech bubbles.
+# Studio draws the speech bubbles and captions itself, so the picture must contain no text.
+# It must also fill the whole frame: an earlier version asked for an empty band at the top and
+# the model drew it as a blank box, which spoiled every picture.
 NO_TEXT_SUFFIX = (
-    " NO text, NO letters, NO speech bubbles, NO words anywhere. "
-    "Leave the top 28 percent of the image as plain empty background for captions."
+    " Full-bleed artwork that fills the entire frame edge to edge, with no panel borders, no frames, "
+    "no caption boxes, no empty rectangles and no white or blank bands. "
+    "NO text, NO letters, NO speech bubbles, NO words anywhere."
+)
+# Only for a panel whose script says it needs room for a long speech bubble. The space is part of
+# the picture (sky, wall, floor), never a box or a border.
+HEADROOM_SUFFIX = (
+    " Keep the upper third of the frame as calm, uncluttered background (sky, wall or ceiling) with "
+    "nothing important in it, so a speech bubble can sit there. It must be part of the same artwork, "
+    "not a box, band or border."
 )
 
 _SCRIPT_SYSTEM = (
     "You write short comic-book scripts. Reply with ONLY valid JSON, no markdown, in this shape:\n"
     '{"title": str, "characters": str, "panels": [{"scene": str, "caption": str, '
-    '"bubbles": [{"side": "left"|"right", "text": str}], "sfx": str}]}\n'
+    '"bubbles": [{"side": "left"|"right", "text": str}], "sfx": str, "space": "none"|"top"}]}\n'
     "Rules: 'characters' is one sentence describing each character's fixed look (reused in every "
     "panel for consistency). 'scene' describes only the visuals of that panel (no text in the "
     "picture). Each bubble text is at most 12 words. At most 2 bubbles per panel; 'left' speaks "
     "first. 'caption' is narration or empty. 'sfx' is a short sound word like BONK! or empty. "
+    "'space' is \"none\" for almost every panel: the picture fills the frame and the speech bubbles sit "
+    "on top of the art. Use \"top\" ONLY when a panel has long dialogue or two bubbles that would cover "
+    "something important, so the picture keeps calm background at the top for them. "
+    "Never describe borders, frames, boxes or empty bands in a scene. "
     "Tell a clear story with a hook, rising tension and an ending beat."
 )
 
@@ -89,6 +102,7 @@ def _template_script(idea: str, n: int) -> dict[str, Any]:
             "caption": beat.upper() + "...",
             "bubbles": [{"side": "left", "text": "Edit me — write the dialogue here."}],
             "sfx": "",
+            "space": "none",
         })
     return {"title": idea[:60], "characters": "", "panels": panels, "source": "template"}
 
@@ -123,7 +137,7 @@ async def make_script(body: ScriptBody) -> dict[str, Any]:
 
 @router.get("/styles")
 def styles() -> dict[str, Any]:
-    return {"styles": STYLE_PRESETS, "suffix": NO_TEXT_SUFFIX}
+    return {"styles": STYLE_PRESETS, "suffix": NO_TEXT_SUFFIX, "headroom_suffix": HEADROOM_SUFFIX}
 
 
 class BubbleIn(BaseModel):
@@ -167,6 +181,26 @@ class RenderBody(BaseModel):
     captions: CaptionsIn = CaptionsIn()
 
 
+# ── pictures from the user's own engines (backup for Flow) ──────────────────
+
+class ImageBody(BaseModel):
+    prompt: str = Field(min_length=3, max_length=4000)
+    format: str = "16:9"
+
+
+@router.post("/image")
+async def make_image(body: ImageBody) -> dict[str, str]:
+    """Draw one picture on a connected engine and cache it like any other media."""
+    try:
+        data, mime, engine, model = await image_engines.generate(body.prompt, body.format)
+    except image_engines.ImageEngineError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    media_id = str(uuid.uuid4())
+    if not media_service.ingest_inline_bytes(media_id, data, kind="image", mime=mime):
+        raise HTTPException(status_code=500, detail="Could not save the picture.")
+    return {"media_id": media_id, "engine": engine, "model": model}
+
+
 # ── voice ───────────────────────────────────────────────────────────────────
 
 @router.get("/voices")
@@ -207,6 +241,11 @@ async def voice_preview(body: VoicePreviewBody):
 
 
 async def _local_file(media_id: str) -> Path:
+    """The picture/clip on disk. Pictures drawn by the user's own engine and some Flow videos are
+    saved straight to the cache with no download URL, so look there first."""
+    cached = media_service.cached_path(media_id)
+    if cached is not None:
+        return cached
     got = await media_service.fetch_and_cache(media_id)
     if not got:
         raise HTTPException(status_code=404, detail=f"media {media_id} not available")

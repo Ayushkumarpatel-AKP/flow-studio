@@ -8,7 +8,7 @@ import {
   getRequest,
   listBoards,
 } from "../api/client";
-import { STYLE_META, TEMPLATES, TONES, type StoryTemplate } from "./templates";
+import { CATEGORIES, STYLE_META, TEMPLATES, TONES, type Category, type StoryTemplate } from "./templates";
 import { Editor } from "./Editor";
 import { Engines } from "./Engines";
 import { DEFAULT_CAPTIONS, DEFAULT_VOICE, VoiceBox, type CaptionCfg, type VoiceCfg } from "./VoiceBox";
@@ -16,7 +16,7 @@ import { FORMATS, type Format, type Panel } from "./types";
 import "./studio.css";
 
 type ScriptResp = { title: string; characters?: string; panels: Omit<Panel, "state">[]; note?: string };
-type StyleResp = { styles: Record<string, string>; suffix: string };
+type StyleResp = { styles: Record<string, string>; suffix: string; headroom_suffix?: string };
 type Idea = { title: string; idea: string };
 
 // Small remembered settings. Storage can be blocked, so never let it break the page.
@@ -37,7 +37,8 @@ const isExt = (h: unknown) => !!(h as { extension_connected?: boolean }).extensi
 
 // Plain-language versions of the errors people actually hit.
 function friendly(err: string): string {
-  if (/QUOTA/i.test(err)) return "Your Flow credits/limit are used up for now. Wait for them to reset, then press Retry.";
+  if (/Insufficient credits|HTTP 402/i.test(err)) return "Flow's daily limit is reached, and your picture engine has no credits left. Add credits there (OpenRouter: openrouter.ai/credits), add an OpenAI key in 🔌 Engines, or wait for Flow to reset, then press Retry.";
+  if (/QUOTA/i.test(err)) return "Google Flow's daily limit is used up (Studio already tried both Flow picture models). Add an OpenAI key, or an OpenRouter key with credits, in 🔌 Engines to keep drawing — or wait for Flow to reset and press Retry.";
   if (/CAPTCHA/i.test(err)) return "Flow could not verify the browser. Keep the Flow tab in front and press Retry.";
   if (/NO_FLOW_TAB|NO_AT_TOKEN|extension/i.test(err)) return "Open flow.google.com in Chrome (signed in) with the Flowboard extension loaded, then Retry.";
   if (/ACCESS_DENIED/i.test(err)) return "Your Flow plan can't use that video model. Studio retries on the Lite model automatically.";
@@ -111,6 +112,9 @@ export function Studio() {
   const [format, setFormat] = useState<Format>("16:9");
   const [selected, setSelected] = useState(0);
   const [showEngines, setShowEngines] = useState(false);
+  const [category, setCategory] = useState<Category | "All">("All");
+  const [showResult, setShowResult] = useState(false);
+  const [pictureEngine, setPictureEngine] = useState<string | null>(null);   // label of a connected picture backup
   const [voiceCfg, setVoiceCfg] = useState<VoiceCfg>(() => load("studio.voice", DEFAULT_VOICE));
   const [capCfg, setCapCfg] = useState<CaptionCfg>(() => load("studio.captions", DEFAULT_CAPTIONS));
   useEffect(() => save("studio.voice", voiceCfg), [voiceCfg]);
@@ -141,6 +145,20 @@ export function Studio() {
       setSetupMsg(String((e as Error).message));
     }
   }, []);
+
+  const loadPictureEngine = useCallback(async () => {
+    try {
+      const ov = await api<{ config: Record<string, { status: { state: string; engine: string | null } }>; providers: { id: string; label: string }[] }>("/api/engines");
+      const st = ov.config.image?.status;
+      setPictureEngine(st?.state === "ok" ? ov.providers.find((p) => p.id === st.engine)?.label ?? "your engine" : null);
+    } catch { setPictureEngine(null); }
+  }, []);
+
+  useEffect(() => {
+    void loadPictureEngine();
+    window.addEventListener("flowboard:engines-changed", loadPictureEngine);
+    return () => window.removeEventListener("flowboard:engines-changed", loadPictureEngine);
+  }, [loadPictureEngine]);
 
   useEffect(() => {
     void checkSetup();
@@ -190,7 +208,7 @@ export function Studio() {
       });
       setTitle(s.title ?? o.idea);
       setCharacters(s.characters ?? "");
-      setPanels(s.panels.map((p) => ({ ...p, bubbles: p.bubbles ?? [], caption: p.caption ?? "", sfx: p.sfx ?? "", state: "idle" })));
+      setPanels(s.panels.map((p) => ({ ...p, bubbles: p.bubbles ?? [], caption: p.caption ?? "", sfx: p.sfx ?? "", space: p.space === "top" ? "top" : "none", state: "idle" })));
       setNote(s.note ?? "");
       setTimeout(() => workRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (e) {
@@ -244,6 +262,12 @@ export function Studio() {
     return () => window.removeEventListener("keydown", onKey);
   });
   // Generation status changes (drawing / done) should not become undo steps.
+  function newStory() {
+    if (panels.some((p) => p.mediaId) && !window.confirm("Start a new story? The current panels will be cleared.")) return;
+    setPanels([]); setTitle(""); setVideoUrl(""); setShowResult(false); setSelected(0); setNote("");
+    past.current = []; future.current = [];
+  }
+
   const update = (i: number, patch: Partial<Panel>) => setPanels((ps) => ps.map((p, k) => (k === i ? { ...p, ...patch } : p)));
   const editPanel = (i: number, patch: Partial<Panel>) => edit((ps) => ps.map((p, k) => (k === i ? { ...p, ...patch } : p)));
   const move = (i: number, d: number) => edit((ps) => {
@@ -264,25 +288,50 @@ export function Studio() {
 
   // ── pictures ──────────────────────────────────────────────────────────────
   const imagePrompt = useMemo(
-    () => (scene: string) => `${styles?.styles[style] ?? style}. ${characters ? characters + " " : ""}${scene}.${styles?.suffix ?? ""}`,
+    () => (scene: string, space?: "none" | "top") =>
+      `${styles?.styles[style] ?? style}. ${characters ? characters + " " : ""}${scene}.${styles?.suffix ?? ""}${space === "top" ? styles?.headroom_suffix ?? "" : ""}`,
     [styles, style, characters],
   );
 
+  // Flow draws first. If it cannot (daily limit, tab not ready…), the user's own picture
+  // engine takes over, so a story can still be finished.
   async function makeImage(i: number) {
-    if (!projectId) return;
+    if (!projectId && !pictureEngine) return;
     update(i, { state: "working", error: undefined });
-    try {
-      const pid = await freshProjectId();
-      setProjectId(pid);
-      const r = await serial(() => runRequest("gen_image", {
-        prompt: imagePrompt(panels[i].scene), project_id: pid,
-        aspect_ratio: format === "9:16" ? "IMAGE_ASPECT_RATIO_PORTRAIT" : "IMAGE_ASPECT_RATIO_LANDSCAPE", variant_count: 1,
-      }));
-      update(i, { mediaId: r.mediaIds[0], state: "done", videoId: undefined });
-    } catch (e) {
-      update(i, { state: "error", error: friendly((e as Error).message) });
-      throw e;
+    const prompt = imagePrompt(panels[i].scene, panels[i].space);
+    let flowError = "";
+    if (projectId) {
+      try {
+        const pid = await freshProjectId();
+        setProjectId(pid);
+        const r = await serial(() => runRequest("gen_image", {
+          prompt, project_id: pid,
+          aspect_ratio: format === "9:16" ? "IMAGE_ASPECT_RATIO_PORTRAIT" : "IMAGE_ASPECT_RATIO_LANDSCAPE", variant_count: 1,
+        }));
+        update(i, { mediaId: r.mediaIds[0], state: "done", videoId: undefined });
+        return;
+      } catch (e) {
+        flowError = (e as Error).message;
+      }
     }
+    // A blocked prompt would be blocked everywhere, so do not spend the user's credits on it.
+    if (pictureEngine && !/UNSAFE|FILTER/i.test(flowError)) {
+      try {
+        const r = await serial(() => api<{ media_id: string; engine: string }>("/api/studio/image", {
+          method: "POST", body: JSON.stringify({ prompt, format }),
+        }));
+        update(i, { mediaId: r.media_id, state: "done", videoId: undefined, error: undefined });
+        if (flowError) setNote(`Flow could not draw panel ${i + 1} (${/QUOTA/i.test(flowError) ? "daily limit reached" : "not ready"}), so ${pictureEngine} drew it with your credits.`);
+        return;
+      } catch (e) {
+        // Show the backup's reason (e.g. no credits) — it is the one the person can act on.
+        const msg = String((e as Error).message);
+        update(i, { state: "error", error: friendly(flowError && !/credits|402/i.test(msg) ? flowError : msg) });
+        throw e;
+      }
+    }
+    update(i, { state: "error", error: friendly(flowError || "No picture engine is ready.") });
+    throw new Error(flowError);
   }
 
   async function makeAllImages() {
@@ -342,7 +391,7 @@ export function Studio() {
         await sleep(2000);
         const j = await api<{ status: string; progress?: number; file?: string; error?: string }>(`/api/studio/jobs/${job_id}`);
         setProgress(`Building your video… ${Math.round((j.progress ?? 0) * 100)}%`);
-        if (j.status === "done" && j.file) { setVideoUrl(j.file); break; }
+        if (j.status === "done" && j.file) { setVideoUrl(j.file); setShowResult(true); break; }
         if (j.status === "failed") throw new Error(j.error ?? "render failed");
       }
     } catch (e) {
@@ -353,11 +402,15 @@ export function Studio() {
   const drawn = panels.filter((p) => p.mediaId).length;
   const imagesReady = panels.length > 0 && drawn === panels.length;
   const setupOk = ext && !!projectId;
+  const canDraw = !!projectId || !!pictureEngine;
   const stepNow = videoUrl || imagesReady ? 4 : panels.length ? 3 : idea.trim() ? 2 : 1;
   const steps = ["Idea", "Script", "Pictures", "Video"];
 
+  const styleLabel = STYLE_META[style]?.label ?? style;
+  const toneLabel = TONES.find((t) => t.key === tone)?.label ?? tone;
+
   return (
-    <div className="st">
+    <div className={`st st--app${panels.length ? " st--editing" : ""}`}>
       {/* ── top bar ─────────────────────────────────────────── */}
       <header className="st-top">
         <div className="st-brand">Flowboard <span>Studio</span></div>
@@ -377,29 +430,9 @@ export function Studio() {
         {showEngines && <Engines onClose={() => setShowEngines(false)} />}
       </header>
 
-      {/* ── hero + templates ────────────────────────────────── */}
-      <section className="st-hero">
-        <div>
-          <h1>What story should we draw today?</h1>
-          <p>Pick a template for an instant start, or write your own idea below. The AI writes the script, draws every panel and builds the video.</p>
-        </div>
-        <div className="st-templates">
-          {TEMPLATES.map((t) => (
-            <button key={t.id} className="tpl" style={{ ["--c" as string]: t.color }} disabled={!!busy}
-              onClick={() => useTemplate(t)} title={t.idea}>
-              <span className="tpl-emoji">{t.emoji}</span>
-              <span className="tpl-title">{t.title}</span>
-              <span className="tpl-blurb">{t.blurb}</span>
-              <span className="tpl-meta">{t.panels} panels · {STYLE_META[t.style]?.label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {/* ── workspace ───────────────────────────────────────── */}
-      <div className="st-work" ref={workRef}>
+      <div className="st-app" ref={workRef}>
+        {/* ── left: settings ─────────────────────────────────── */}
         <aside className="st-side">
-          {/* Setup comes first, but only while something still blocks drawing. */}
           {!setupOk && (
             <details className="box acc warn" open>
               <summary>Finish setup</summary>
@@ -420,34 +453,14 @@ export function Studio() {
           )}
 
           <details className="box acc" open>
-            <summary><b>1</b> Your idea</summary>
-            <textarea rows={4} value={idea} onChange={(e) => setIdea(e.target.value)}
-              placeholder="e.g. Two stickmen survive a zombie outbreak during a solar eclipse" />
-            <div className="btn-row">
-              <button className="ai" disabled={!idea.trim() || !!ai}
-                onClick={() => void improve("idea", idea, "", setIdea, "idea")}>
-                {ai === "idea" ? "Thinking…" : "✨ Improve my idea"}
-              </button>
-              <button className="ai" disabled={!!ai} onClick={() => void surprise()}>
-                {ai === "ideas" ? "Thinking…" : "🎲 Surprise me"}
-              </button>
-            </div>
-            {ideas.length > 0 && (
-              <ul className="ideas">
-                {ideas.map((i, k) => (
-                  <li key={k}><button onClick={() => { setIdea(i.idea); setIdeas([]); }}><b>{i.title}</b><span>{i.idea}</span></button></li>
-                ))}
-              </ul>
-            )}
-          </details>
-
-          <details className="box acc" open>
-            <summary><b>2</b> Look &amp; shape</summary>
+            <summary>Look &amp; shape</summary>
             <h3 className="acc-label">Art style</h3>
-            <div className="chips">
+            <div className="style-tiles">
               {Object.keys(styles?.styles ?? STYLE_META).map((k) => (
-                <button key={k} className={`chip ${style === k ? "on" : ""}`} onClick={() => setStyle(k)}>
-                  {STYLE_META[k]?.emoji ?? "🎨"} {STYLE_META[k]?.label ?? k}
+                <button key={k} className={`style-tile${style === k ? " on" : ""}`} onClick={() => setStyle(k)}
+                  title={STYLE_META[k]?.hint} aria-pressed={style === k}>
+                  {STYLE_META[k]?.sample && <img src={STYLE_META[k].sample} alt="" loading="lazy" decoding="async" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />}
+                  <span>{STYLE_META[k]?.emoji ?? "🎨"} {STYLE_META[k]?.label ?? k}</span>
                 </button>
               ))}
             </div>
@@ -468,12 +481,13 @@ export function Studio() {
             {panels.some((p) => p.mediaId) && <small className="muted">Changing the shape? Redraw panels so the pictures fit.</small>}
             <h3 className="acc-label">Panels: {count} <small className="muted">≈ {count * 6} seconds</small></h3>
             <input type="range" min={3} max={12} value={count} onChange={(e) => setCount(Number(e.target.value))} />
+            {panels.length > 0 && (
+              <button className="go side-go" disabled={idea.trim().length < 3 || !!busy} onClick={() => void writeScript()}
+                title="Write a fresh script with these settings">
+                {busy === "script" ? "Writing…" : "↻ Rewrite the script"}
+              </button>
+            )}
           </details>
-
-          {/* The main action stays visible no matter which sections are folded. */}
-          <button className="go side-go" disabled={idea.trim().length < 3 || !!busy} onClick={() => void writeScript()}>
-            {busy === "script" ? "Writing…" : panels.length ? "↻ Rewrite the script" : "✍️ Write the script"}
-          </button>
 
           <VoiceBox voice={voiceCfg} captions={capCfg} onVoice={setVoiceCfg} onCaptions={setCapCfg}
             onOpenEngines={() => setShowEngines(true)} />
@@ -491,71 +505,125 @@ export function Studio() {
               {setupMsg && <p className="hint">{setupMsg}</p>}
             </details>
           )}
+
+          <p className="side-credit">Made by <strong>Ayush</strong></p>
         </aside>
 
+        {/* ── centre ─────────────────────────────────────────── */}
         <main className="st-main">
           {note && <p className="hint">{note}</p>}
 
           {panels.length === 0 ? (
-            <div className="empty">
-              <div className="empty-art">💬</div>
-              <h2>Your storyboard will appear here</h2>
-              <p>Choose a template above, or write an idea and press <b>Write the script</b>.</p>
-              <ol>
-                <li>The AI writes panels and dialogue</li>
-                <li>You edit anything you like</li>
-                <li>It draws each panel, adds speech bubbles and exports an MP4</li>
-              </ol>
+            <div className="start">
+              <section className="start-prompt" aria-label="Your idea">
+                <h1>What story should we draw?</h1>
+                <textarea rows={2} value={idea} onChange={(e) => setIdea(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && idea.trim().length >= 3 && !busy) void writeScript(); }}
+                  placeholder="e.g. Two stickmen survive a zombie outbreak during a solar eclipse" />
+                <div className="start-actions">
+                  <button className="ai" disabled={!idea.trim() || !!ai} onClick={() => void improve("idea", idea, "", setIdea, "idea")}>
+                    {ai === "idea" ? "Thinking…" : "✨ Improve"}
+                  </button>
+                  <button className="ai" disabled={!!ai} onClick={() => void surprise()}>
+                    {ai === "ideas" ? "Thinking…" : "🎲 Surprise me"}
+                  </button>
+                  <span className="start-summary" title="Change these in the panel on the left">
+                    <i>{styleLabel}</i><i>{toneLabel}</i><i>{format}</i><i>{count} panels</i>
+                  </span>
+                  <button className="go" disabled={idea.trim().length < 3 || !!busy} onClick={() => void writeScript()} title="Ctrl+Enter">
+                    {busy === "script" ? "Writing…" : "✍️ Write the script"}
+                  </button>
+                </div>
+                {ideas.length > 0 && (
+                  <ul className="ideas">
+                    {ideas.map((i, k) => (
+                      <li key={k}><button onClick={() => { setIdea(i.idea); setIdeas([]); }}><b>{i.title}</b><span>{i.idea}</span></button></li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="start-tpl" aria-label="Templates">
+                <div className="start-tpl-head">
+                  <h2>Or start from a template</h2>
+                  <div className="tpl-cats" role="tablist" aria-label="Template categories">
+                    {(["All", ...CATEGORIES] as const).map((c) => {
+                      const n = c === "All" ? TEMPLATES.length : TEMPLATES.filter((t) => t.category === c).length;
+                      return (
+                        <button key={c} role="tab" aria-selected={category === c} className={`tpl-cat${category === c ? " on" : ""}`}
+                          onClick={() => setCategory(c)}>{c} <small>{n}</small></button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="st-templates">
+                  {TEMPLATES.filter((t) => category === "All" || t.category === category).map((t) => (
+                    <button key={t.id} className="tpl" style={{ ["--c" as string]: t.color }} disabled={!!busy}
+                      onClick={() => useTemplate(t)} title={t.idea}>
+                      <span className="tpl-cover">
+                        <img src={t.cover} alt="" loading="lazy" decoding="async" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                        <span className="tpl-emoji">{t.emoji}</span>
+                      </span>
+                      <span className="tpl-title">{t.title}</span>
+                      <span className="tpl-meta">{t.panels} panels · {STYLE_META[t.style]?.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
             </div>
           ) : (
-            <>
-              <Editor
-                panels={panels}
-                format={format}
-                title={title}
-                selected={Math.min(selected, panels.length - 1)}
-                busy={!!busy}
-                canDraw={!!projectId}
-                ai={ai}
-                onSelect={setSelected}
-                onTitle={setTitle}
-                onPanel={editPanel}
-                onMove={move}
-                onRemove={remove}
-                onAdd={addPanel}
-                onDraw={(i) => void makeImage(i).catch(() => {})}
-                onImprove={(kind, text, ctx, apply, key) => void improve(kind, text, ctx, apply, key)}
-              />
-
-              {videoUrl && (
-                <section className="result">
-                  <h2>🎬 Your video is ready</h2>
-                  <video src={videoUrl} controls />
-                  <a className="dl" href={videoUrl} download="flowboard-comic.mp4">⬇ Download MP4</a>
-                </section>
-              )}
-            </>
+            <Editor
+              panels={panels}
+              format={format}
+              title={title}
+              selected={Math.min(selected, panels.length - 1)}
+              busy={!!busy}
+              canDraw={canDraw}
+              ai={ai}
+              onSelect={setSelected}
+              onTitle={setTitle}
+              onPanel={editPanel}
+              onMove={move}
+              onRemove={remove}
+              onAdd={addPanel}
+              onNew={newStory}
+              onDraw={(i) => void makeImage(i).catch(() => {})}
+              onImprove={(kind, text, ctx, apply, key) => void improve(kind, text, ctx, apply, key)}
+            />
           )}
         </main>
       </div>
 
-      {/* ── action bar ──────────────────────────────────────── */}
+      {/* ── bottom action bar (editing only) ─────────────────── */}
       {panels.length > 0 && (
         <div className="bar">
           <div className="bar-info">
             {progress ? <b className="spin">{progress}</b> : <span>{imagesReady ? "All panels drawn — ready!" : `${drawn} of ${panels.length} panels drawn`}</span>}
             <div className="meter"><i style={{ width: `${(drawn / panels.length) * 100}%` }} /></div>
           </div>
+          {videoUrl && <button onClick={() => setShowResult(true)}>▶ View video</button>}
           <label className="check"><input type="checkbox" checked={animate} onChange={(e) => setAnimate(e.target.checked)} /> Animate (uses more credits)</label>
           {busy && busy !== "render" && <button onClick={() => { stop.current = true; }}>Stop</button>}
           {animate && imagesReady && <button disabled={!!busy} onClick={() => void animateAll()}>{busy === "videos" ? "Animating…" : "🎞 Animate panels"}</button>}
           {!imagesReady
-            ? <button className="go" disabled={!!busy || !setupOk} onClick={() => void makeAllImages()}>{busy === "images" ? "Drawing…" : "🖌️ Draw all panels"}</button>
+            ? <button className="go" disabled={!!busy || !canDraw} onClick={() => void makeAllImages()}>{busy === "images" ? "Drawing…" : "🖌️ Draw all panels"}</button>
             : <button className="go" disabled={!!busy} onClick={() => void render()}>{busy === "render" ? "Building…" : "🎬 Make my video"}</button>}
         </div>
       )}
 
-      <footer className="st-foot">Made by <strong>Ayush</strong></footer>
+      {/* ── finished video ───────────────────────────────────── */}
+      {showResult && videoUrl && (
+        <div className="result-back" role="dialog" aria-label="Your video" onClick={() => setShowResult(false)}>
+          <section className="result" onClick={(e) => e.stopPropagation()}>
+            <div className="result-head">
+              <h2>🎬 Your video is ready</h2>
+              <button onClick={() => setShowResult(false)} aria-label="Close">✕</button>
+            </div>
+            <video src={videoUrl} controls autoPlay />
+            <a className="dl" href={videoUrl} download="flowboard-comic.mp4">⬇ Download MP4</a>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

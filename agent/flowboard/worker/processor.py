@@ -9,6 +9,7 @@ round-trip is ported.
 from __future__ import annotations
 
 import asyncio
+import re
 import logging
 import time
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from flowboard import config
 from flowboard.services import media as media_service
 from flowboard.services.flow_client import flow_client
 from flowboard.services.flow_sdk import (
+    DEFAULT_IMAGE_MODEL_KEY,
+    IMAGE_MODELS,
     get_flow_sdk,
     is_model_access_denied,
     learn_paygate_tier,
@@ -108,6 +111,12 @@ async def _handle_create_project(params: dict) -> tuple[dict, Optional[str]]:
     if resp.get("error"):
         return resp, str(resp["error"])[:200]
     return resp, None
+
+
+# Flow image models that answered "not found" for this account (Google renames them), so we
+# do not waste a captcha on them again until the agent restarts.
+_FLOW_MODEL_UNAVAILABLE: set[str] = set()
+_FLOW_NOT_FOUND = re.compile(r"failed: \[5\]")
 
 
 async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
@@ -200,17 +209,43 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     image_model = params.get("image_model")
     if not isinstance(image_model, str) or not image_model.strip():
         image_model = None
-    resp = await get_flow_sdk().gen_image(
-        prompt=prompt.strip(),
-        project_id=project_id,
-        aspect_ratio=aspect,
-        paygate_tier=tier,
-        ref_media_ids=ref_media_ids,
-        variant_count=variant_count,
-        prompts=per_variant_prompts,
-        image_model=image_model,
-    )
+    # Flow's daily quota is counted per image model. When the one in use is spent, try the
+    # other Flow models before giving up: they are free and have their own allowance.
+    first = image_model if image_model in IMAGE_MODELS else DEFAULT_IMAGE_MODEL_KEY
+    candidates = [k for k in [first] + [m for m in IMAGE_MODELS if m != first]
+                  if k not in _FLOW_MODEL_UNAVAILABLE or k == first]
+    resp: dict = {}
+    quota_error: Optional[str] = None
+    for model_key in candidates:
+        resp = await get_flow_sdk().gen_image(
+            prompt=prompt.strip(),
+            project_id=project_id,
+            aspect_ratio=aspect,
+            paygate_tier=tier,
+            ref_media_ids=ref_media_ids,
+            variant_count=variant_count,
+            prompts=per_variant_prompts,
+            image_model=model_key,
+        )
+        err = str(resp.get("error") or "")
+        if not err:
+            break
+        if "PER_MODEL_DAILY_QUOTA" in err:
+            quota_error = quota_error or err
+            logger.info("gen_image: %s daily quota reached; trying the next Flow image model", model_key)
+            continue
+        if quota_error and _FLOW_NOT_FOUND.search(err):
+            # The first model proved the project and request work, so "not found" here means this
+            # account has no such model (Google renames them). Remember it and move on.
+            _FLOW_MODEL_UNAVAILABLE.add(model_key)
+            logger.info("gen_image: Flow has no %s for this account; skipping it from now on", model_key)
+            continue
+        break   # captcha, blocked prompt…: not about the model, so another model will not help
     if resp.get("error"):
+        # When every model was tried, report the reason that matters (the daily limit), not the
+        # last model's "not found".
+        if quota_error:
+            resp = {**resp, "error": quota_error}
         return resp, str(resp["error"])[:200]
     # Flow returns signed fifeUrls directly in the response — persist them
     # immediately so `/media/:id` can serve bytes without any extra round-trip.

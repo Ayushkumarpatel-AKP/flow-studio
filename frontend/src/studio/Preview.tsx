@@ -76,7 +76,7 @@ export function Preview({ panel, format, selected, onSelect, onBubble, onSfx }: 
     <div
       ref={box}
       className={`pv pv--${format.replace(":", "x")}`}
-      style={{ aspectRatio: `${fw} / ${fh}`, ["--fs" as string]: `${fontCq}cqw` }}
+      style={{ aspectRatio: `${fw} / ${fh}`, ["--ar" as string]: fw / fh, ["--fs" as string]: `${fontCq}cqw` }}
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}

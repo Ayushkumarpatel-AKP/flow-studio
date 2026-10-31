@@ -12,6 +12,7 @@ can do. Keys live only in a local file and are never sent back to the browser.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ JOBS: dict[str, dict[str, Any]] = {
     "vision":  {"label": "Picture description", "kind": "vision", "model": "vision", "wired": True},
     "subtitles": {"label": "Exact subtitle timing", "kind": "stt", "model": "stt", "wired": True},
     "voice":   {"label": "Voiceover",        "kind": "tts",   "model": "tts", "wired": True},
-    "image":   {"label": "Pictures",         "kind": "image", "model": "image", "wired": False},
+    "image":   {"label": "Pictures (backup for Flow)", "kind": "image", "model": "image", "wired": True},
 }
 TEXT_JOBS = [j for j, v in JOBS.items() if v["kind"] == "text"]
 # Old per-feature names used by the Canvas AI layer -> Engines job ids.
@@ -98,6 +99,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "label": "OpenRouter",
         "tagline": "One key, many models — some free",
         "base_url": "https://openrouter.ai/api/v1",
+        "images_url": "https://openrouter.ai/api/v1/images/models",   # its picture-model catalogue
+        "image_api": "openrouter",
         "key_prefix": "sk-or-",
         "get_key_url": "https://openrouter.ai/keys",
         "get_key_steps": ["Sign in at openrouter.ai", "Open Keys → Create Key", "Copy the key that starts with sk-or- and paste it here"],
@@ -109,12 +112,13 @@ PROVIDERS: dict[str, dict[str, Any]] = {
             "vision": ["google/gemini-2.0-flash-exp:free", "meta-llama/llama-3.2-11b-vision-instruct:free"],
         },
         "stt_regex": None, "image_regex": None, "tts_regex": None,
-        "best_for": ["ideas"],
+        "best_for": ["ideas", "image"],
     },
     "openai": {
         "label": "OpenAI",
         "tagline": "Best voices and pictures, pay as you go",
         "base_url": "https://api.openai.com/v1",
+        "image_api": "openai",
         "key_prefix": "sk-",
         "get_key_url": "https://platform.openai.com/api-keys",
         "get_key_steps": ["Sign in at platform.openai.com and add billing", "Open API keys → Create new secret key", "Copy the key that starts with sk- and paste it here"],
@@ -157,6 +161,7 @@ _ORDER_FOR_KIND = {
     "text": TEXT_PREFERENCE,
     "vision": ["gemini", "openai", "nvidia", "groq", "openrouter"],  # picture-reading quality first
     "tts": ["elevenlabs", "openai"],                                  # most natural voice first
+    "image": ["openrouter", "openai"],                                # picture engines (Flow draws first)
 }
 
 
@@ -193,6 +198,20 @@ def pick_model(ids: list[str], prefs: list[str]) -> Optional[str]:
     for m in prefs:
         if m in have:
             return m
+    return None
+
+
+_IMAGE_PREFS = [r"nano-banana", r"gemini.*image", r"flux", r"seedream", r"gpt-image", r"qwen-image", r"."]
+_CHEAP = re.compile(r"flash|turbo|klein|schnell|mini|lite|fast", re.I)
+
+
+def pick_image_model(ids: list[str]) -> Optional[str]:
+    """A sensible picture model from a live catalogue: known families first, and
+    within a family the small/fast variant (they cost less per picture)."""
+    for pat in _IMAGE_PREFS:
+        hits = [i for i in ids if re.search(pat, i, re.I)]
+        if hits:
+            return ([h for h in hits if _CHEAP.search(h)] or hits)[0]
     return None
 
 
@@ -329,11 +348,36 @@ async def probe(pid: str, key: str, client: Optional[httpx.AsyncClient] = None) 
             if r.status_code in (200, 429):
                 limits = _limits(r.headers)
                 models["text"] = models["text"] or model
+                image_ids: list[str] = []
+                if p.get("images_url"):
+                    try:
+                        ir = await c.get(p["images_url"], headers=auth)
+                        if ir.status_code == 200:
+                            rows = ir.json()
+                            rows = rows.get("data") if isinstance(rows, dict) else rows
+                            image_ids = [m["id"] for m in rows or [] if isinstance(m, dict) and m.get("id")]
+                            models["image"] = models["image"] or pick_image_model(image_ids)
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        pass
+                tier = tier_guess(pid, limits)
+                image_blocked = None
+                if pid == "openrouter":
+                    try:  # does this account have purchased credits? pictures need them
+                        kr = await c.get(f"{base}/key", headers=auth)
+                        info = (kr.json().get("data") or {}) if kr.status_code == 200 else {}
+                        if info.get("is_free_tier"):
+                            image_blocked = "OpenRouter pictures need purchased credits, and this account is on the free tier."
+                            models["image"] = None
+                            tier = {"label": "Free tier — text only (pictures need purchased credits)", "free": True,
+                                    "note": p["free_tier"], "estimate": False}
+                    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                        pass
                 return {
                     "status": "ok" if r.status_code == 200 else "rate_limited",
                     "message": "Key works." if r.status_code == 200 else "Key is valid but currently rate-limited.",
-                    "models": models, "limits": limits, "tier": tier_guess(pid, limits),
-                    "model_count": len(ids), "model_ids": ids, "checked_at": int(time.time()),
+                    "models": models, "limits": limits, "tier": tier,
+                    "model_count": len(ids), "model_ids": ids, "image_ids": image_ids,
+                    "image_blocked": image_blocked, "checked_at": int(time.time()),
                 }
             # Some providers (Gemini) answer a bad key with a 400 that mentions the key.
             bad_key = r.status_code in (401, 403) or (
@@ -474,7 +518,7 @@ def available_models(pid: str, job: str, data: dict[str, Any]) -> list[dict[str,
         cand = [i for i in ids if re.search(r"tts|eleven", i, re.I)]
     else:
         rx = PROVIDERS[pid].get("image_regex")
-        cand = [i for i in ids if rx and re.search(rx, i, re.I)]
+        cand = _norm(st.get("image_ids") or []) or [i for i in ids if rx and re.search(rx, i, re.I)]
     default = (st.get("models") or {}).get(JOBS[job]["model"])
     if default and default not in cand:
         cand.insert(0, default)
@@ -498,11 +542,17 @@ def job_status(data: dict[str, Any], job: str) -> dict[str, Any]:
     order = _text_order(job, data)
     a = assigned(data, job)
     if not order:
+        blocked = next((st.get("image_blocked") for st in (data.get("state") or {}).values() if st.get("image_blocked")), None)
         tip = {"vision": "Add a free Gemini key to describe pictures.",
                "voice": "Free voices work without a key.",
-               "image": "Pictures come from your Flow plan."}.get(job, "Add a free Groq key to power this.")
+               "image": (blocked + " " if blocked else "") + "Pictures come from your Flow plan; add an OpenAI key, or an "
+                        "OpenRouter key with credits, as a backup."}.get(job, "Add a free Groq key to power this.")
         return {"state": "none", "engine": None, "message": f"No connected engine can do this. {tip}"}
     first = order[0]
+    if job == "image":
+        return {"state": "ok", "engine": first,
+                "message": f"Flow draws first. When its daily limit is reached, {PROVIDERS[first]['label']} takes over "
+                           "(this uses your own credits)."}
     st = ((data.get("state") or {}).get(first) or {}).get("status")
     note = ""
     if a["engine"] and a["engine"] != first:
@@ -543,7 +593,7 @@ async def save_key(pid: str, key: str) -> dict[str, Any]:
     # Keep keys that work, or that are merely rate-limited; refuse ones the provider rejects.
     if result["status"] in ("ok", "rate_limited"):
         data.setdefault("keys", {})[pid] = key
-        data.setdefault("state", {})[pid] = {k: result[k] for k in ("status", "message", "models", "limits", "tier", "checked_at", "model_ids", "voices") if k in result}
+        data.setdefault("state", {})[pid] = {k: result[k] for k in ("status", "message", "models", "limits", "tier", "checked_at", "model_ids", "voices", "image_ids", "image_blocked") if k in result}
         _save(data)
     return result
 
@@ -554,7 +604,7 @@ async def retest(pid: str) -> dict[str, Any]:
         raise EngineError("No key saved for this engine.")
     result = await probe(pid, key)
     data = _load()
-    data.setdefault("state", {})[pid] = {k: result[k] for k in ("status", "message", "models", "limits", "tier", "checked_at", "model_ids", "voices") if k in result}
+    data.setdefault("state", {})[pid] = {k: result[k] for k in ("status", "message", "models", "limits", "tier", "checked_at", "model_ids", "voices", "image_ids", "image_blocked") if k in result}
     if "status" in result and result["status"] == "invalid":
         data["state"][pid]["status"] = "invalid"
     _save(data)
@@ -644,6 +694,19 @@ def _image_parts(paths: Optional[list[str]]) -> list[dict[str, Any]]:
     return parts
 
 
+_RETRYABLE = (429, 500, 502, 503, 504)
+_RETRY_WAIT = 2.0   # seconds; tests set this to 0
+
+
+def _retry_wait(r: httpx.Response) -> float:
+    """How long to wait before the retry: the provider's own hint if it gave one."""
+    try:
+        hint = float(r.headers.get("retry-after", ""))
+    except ValueError:
+        hint = _RETRY_WAIT
+    return max(0.0, min(hint, 8.0)) if _RETRY_WAIT else 0.0
+
+
 async def chat(job: str, user: str, *, system_prompt: Optional[str] = None, timeout: float = 90.0,
                images: Optional[list[str]] = None, client: Optional[httpx.AsyncClient] = None) -> str:
     """Run a text job on the first working engine, falling through on failure.
@@ -673,6 +736,15 @@ async def chat(job: str, user: str, *, system_prompt: Optional[str] = None, time
                 r = await c.post(f"{p['base_url']}/chat/completions",
                                  headers={"Authorization": f"Bearer {data['keys'][pid]}"},
                                  json={"model": model, "messages": msgs, "temperature": 0.8})
+                if r.status_code in _RETRYABLE:
+                    # Free tiers rate-limit in bursts. One short wait usually clears it, and it is
+                    # better than failing a long chat run halfway through.
+                    wait = _retry_wait(r)
+                    logger.info("%s answered %s; retrying once in %.1fs", pid, r.status_code, wait)
+                    await asyncio.sleep(wait)
+                    r = await c.post(f"{p['base_url']}/chat/completions",
+                                     headers={"Authorization": f"Bearer {data['keys'][pid]}"},
+                                     json={"model": model, "messages": msgs, "temperature": 0.8})
                 if r.status_code == 200:
                     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
                     if text:

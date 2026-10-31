@@ -45,7 +45,7 @@ def test_analyse_models_picks_preferred_and_reports_jobs():
     compat = engines.job_compat(m)
     assert compat["script"]["ok"] and compat["script"]["wired"]
     assert compat["subtitles"]["ok"] and compat["subtitles"]["wired"]
-    assert not compat["image"]["wired"]  # pictures still come from Flow
+    assert not compat["image"]["ok"] and compat["image"]["wired"]  # picture backup is wired; this key has no picture model
     assert not compat["image"]["ok"]
 
 
