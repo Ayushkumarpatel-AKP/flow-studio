@@ -1,33 +1,41 @@
-# Flowboard Bridge (Chrome MV3)
+# Flowboard Bridge (browser extension)
 
-Local extension that proxies Flowboard agent requests to authenticated labs.google sessions.
+The browser half of Flow Studio. It runs generation requests inside **your own signed-in Google Flow tab** and hands the results to the local Flow Studio app. Made by Ayush.
 
-## Install
+## Install (unpacked)
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode** (top-right toggle).
-3. Click **Load unpacked** and select this folder.
+1. Open `chrome://extensions` (or `edge://extensions`).
+2. Turn on **Developer mode**.
+3. Click **Load unpacked** and choose this folder.
+4. Open <https://flow.google.com>, sign in, and open a project. Keep that tab open.
 
-## How it works
+## What it does
 
-- The service worker connects to `ws://127.0.0.1:8355` automatically when the agent is running.
-- On first sign-in at `labs.google/fx/tools/flow` the `Authorization: Bearer ya29.*` token is captured automatically from outgoing request headers.
-- Responses to agent `api_request` commands are sent via HTTP POST to `http://127.0.0.1:8434/api/ext/callback` with an `X-Callback-Secret` header (secret supplied by the agent on connect). WS fallback is used if HTTP fails.
-- A keepalive `ping` is sent every ~24 s; disconnections trigger an automatic reconnect in ~5 s.
-- When an `api_request` includes `captchaAction`, the extension solves a reCAPTCHA Enterprise challenge via the injected MAIN-world script (`injected.js`) running on the Flow tab, then patches the token into the request body before forwarding.
-- `trpc_request` commands are proxied directly to `https://labs.google/` with the captured Bearer token and browser credentials.
-
-## Content script + injected script
-
-`content.js` runs at `document_start` on `labs.google/fx/tools/flow*` pages. It injects `injected.js` into the MAIN world so it can reach `window.grecaptcha.enterprise`. The two scripts communicate via `CustomEvent` (`GET_CAPTCHA` / `CAPTCHA_RESULT`).
+- **Bridges the app and Flow.** The service worker connects to the local agent (`ws://127.0.0.1:8355`) and runs each Flow request inside the signed-in tab, because Flow signs every call in the page itself.
+- **Follows your project.** It reads the project id from the Flow tab's address and tells the agent, so you never paste a link. It re-syncs on every tab change and reconnect.
+- **Handles the captcha.** Flow asks for a reCAPTCHA token on each generation. The extension brings the Flow tab forward and retries once if the token times out.
+- **Retries safely.** If the page returns nothing, it retries once with a fresh token instead of re-sending a spent one.
 
 ## Popup
 
-Click the extension icon to see connection status, token age, request counters, and buttons to open the Flow tab or force a token refresh.
+Click the extension icon for:
+- a setup checklist (app running, Flow tab open, signed in, project detected),
+- plain-language hints for common errors (captcha, quota, plan, blocked prompt),
+- the most recent requests,
+- **Open Studio**, **Open Flow tab**, **Refresh token** and **Disconnect** buttons.
 
-## Out of scope (this version)
+## Files
 
-- Side panel
-- Agent-side TRPC media URL forwarding listener
+| File | Purpose |
+|---|---|
+| `manifest.json` | Manifest V3 definition and permissions |
+| `background.js` | Service worker: connection to the agent, request running, captcha, project following |
+| `content.js` / `injected.js` | Run on the Flow page to reach Google's captcha |
+| `popup.html` / `popup.js` | The toolbar popup |
+| `rules.json` | Network rules used by the extension |
 
-See `docs/PLAN.md` for planned additions.
+## Notes
+
+- It only talks to Google Flow's own domains (see `host_permissions` in `manifest.json`) and your own computer (`localhost`).
+- Nothing is sent anywhere else. Keys for AI services are kept by the local app, not by this extension.
+- This is an unofficial bridge and is not affiliated with Google.
