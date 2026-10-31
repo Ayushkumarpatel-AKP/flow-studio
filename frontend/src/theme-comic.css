@@ -141,3 +141,13 @@ a { color: var(--pop-blue); }
 .project-sidebar, [class*="sidebar"] { border-color: var(--ink); }
 .chat-dock { border: 3px solid var(--ink) !important; box-shadow: 6px 6px 0 var(--ink) !important; }
 .toast, .toaster > * { border: 3px solid var(--ink); box-shadow: var(--shadow); color: var(--ink); background: #fff; }
+
+/* ── Engines entry point on the Canvas toolbar + Advanced note ─────────────── */
+.toolbar-engines { padding: 3px 12px; font-size: 14px; background: var(--pop-yellow); white-space: nowrap; }
+.ai-provider-dialog__easy {
+  margin: 0 0 14px; padding: 10px 14px; background: #d9f7e8; border: 3px solid var(--ink); border-radius: 10px;
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 14px;
+}
+.ai-provider-dialog__easy button { padding: 4px 12px; background: var(--pop-yellow); }
+.ai-provider-dialog-backdrop { z-index: 10000 !important; }
+.chat-dock__notice-btn { padding: 2px 10px; font-size: 13px; background: var(--pop-yellow); white-space: nowrap; }

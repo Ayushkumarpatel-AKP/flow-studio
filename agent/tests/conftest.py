@@ -11,6 +11,8 @@ os.environ["FLOWBOARD_DB"] = str(Path(_TMPDIR) / "test.db")
 # Force the deterministic mock planner in tests — never spawn `claude` subprocess.
 # Individual tests that want to exercise the CLI path patch the module directly.
 os.environ["FLOWBOARD_PLANNER_BACKEND"] = "mock"
+# Never read the developer's real AI keys (~/.flowboard/engines.json) during tests.
+os.environ["FLOWBOARD_ENGINES"] = str(Path(_TMPDIR) / "engines.json")
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import SQLModel  # noqa: E402

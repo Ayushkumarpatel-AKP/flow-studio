@@ -4,8 +4,8 @@
 :func:`run_chat_agent` as a FastAPI BackgroundTask. The loop runs HERE,
 not in the worker: only LLM reasoning goes through the muse provider
 queue (``run_llm("chat_agent", ...)``); every tool is a direct service
-call (create node/edge, ``run_muse_media`` for image/video, ffmpeg
-concat).
+call (create node/edge, image/video from Muse or — by default — the
+user's Google Flow, ffmpeg concat).
 
 :func:`run_chat_agent` never raises — any failure marks the ChatRun
 ``failed`` and writes an assistant message carrying the error.
@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -65,10 +66,10 @@ RULES
 - Respond with EXACTLY ONE JSON object per turn, no prose outside it.
 - Either a tool call: {"tool": "<name>", "args": {...}}
 - Or finish: {"done": true, "reply": "<summary for the user>"}
-- The reply must be in the same language as the user's message.
+- The reply must be in the same language as the user's message. If unsure, reply in English.
 - Node positions: x grows right, y grows down. Lay new content out
   left-to-right starting near x=0, spacing nodes ~300px apart.
-- Prefer reusing existing nodes on follow-up turns ("sửa", "gen lại"):
+- Prefer reusing existing nodes on follow-up turns ("fix it", "regenerate"):
   regenerate into the same node instead of creating duplicates.
 - Keep prompts you send to gen_image/gen_video concrete and visual.
 - If a tool returns an error, adapt (fix args, try another tool) instead
@@ -217,9 +218,9 @@ async def _chat_llm(
     attachments: Optional[list[str]],
     turn: int,
 ) -> str:
-    """Route through ``run_llm("chat_agent")``; on a fresh install with no
-    provider pinned, fall back to the muse provider directly (the dock is
-    specified Muse-compatible, and muse needs no configuration)."""
+    """Route through ``run_llm("chat_agent")``, which tries the user's own keys
+    from the Engines screen first. With nothing connected and no provider pinned,
+    fall back to Muse if it happens to be running; otherwise say what to do."""
     try:
         return await run_llm(
             "chat_agent",
@@ -235,9 +236,8 @@ async def _chat_llm(
         provider = MuseProvider()
         if not await provider.is_available():
             raise LLMError(
-                "Muse chưa sẵn sàng — agent không thể suy nghĩ. "
-                "Đặt FLOWBOARD_MUSE2API_BASE trỏ tới muse2api, hoặc chạy: "
-                "python agent/scripts/muse_worker.py"
+                "The chat agent has no AI engine to think with yet. Open 🔌 Engines and add a "
+                "free Groq key (no card needed), then send your message again."
             )
         return await provider.run(
             user_prompt,
@@ -245,6 +245,95 @@ async def _chat_llm(
             attachments=attachments,
             timeout=_LLM_TIMEOUT_S,
         )
+
+
+# ── media generation (Muse if set up, otherwise Google Flow) ──────────
+
+async def _muse_ready() -> bool:
+    try:
+        return await MuseProvider().is_available()
+    except Exception:  # never let a probe break a chat run
+        return False
+
+
+async def _flow_media(
+    kind: str,
+    prompt: str,
+    reference_media_ids: Optional[list[str]],
+    source_media_ids: Optional[list[str]],
+) -> tuple[dict, Optional[str]]:
+    """Make an image/video through the same Flow worker the canvas buttons use."""
+    from flowboard.db.models import Request
+    from flowboard.services.flow_project import effective_project_id
+    from flowboard.worker.processor import get_worker
+
+    project_id = effective_project_id()
+    if not project_id:
+        return {}, ("No Flow project is linked yet. Open a project in your Flow tab "
+                    "(the extension links it automatically) and try again.")
+    if kind == "image":
+        rtype = "gen_image"
+        params: dict[str, Any] = {
+            "prompt": prompt, "project_id": project_id,
+            "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE", "variant_count": 1,
+        }
+        if reference_media_ids:
+            params["ref_media_ids"] = reference_media_ids
+    else:
+        if not source_media_ids:
+            return {}, "A start frame is required to make a video."
+        rtype = "gen_video"
+        params = {
+            "prompt": prompt, "project_id": project_id, "start_media_id": source_media_ids[0],
+            "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+        }
+    with get_session() as s:
+        req = Request(type=rtype, params=params, status="queued")
+        s.add(req)
+        s.commit()
+        s.refresh(req)
+        rid = req.id
+    get_worker().enqueue(rid)
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        await asyncio.sleep(3)
+        with get_session() as s:
+            row = s.get(Request, rid)
+            status, result, error = row.status, row.result, row.error
+        if status == "done":
+            return (result or {}), None
+        if status in ("failed", "canceled", "timeout"):
+            return {}, error or status
+    return {}, "Timed out waiting for Google Flow."
+
+
+_FLOW_HINT = ("No image/video engine is ready. Open a project in your Google Flow tab "
+              "(the extension links it automatically), keep it in front, and try again.")
+
+
+def _flow_ready() -> bool:
+    from flowboard.services.flow_project import effective_project_id
+    return bool(effective_project_id())
+
+
+async def _generate_media(
+    kind: str,
+    prompt: str,
+    *,
+    reference_media_ids: Optional[list[str]] = None,
+    source_media_ids: Optional[list[str]] = None,
+) -> tuple[dict, Optional[str]]:
+    """Google Flow when a project is linked (and Muse is not set up), else Muse."""
+    flow = _flow_ready()
+    if flow and not await _muse_ready():
+        return await _flow_media(kind, prompt, reference_media_ids, source_media_ids)
+    if kind == "image":
+        result, error = await run_muse_media(kind="image", prompt=prompt, reference_media_ids=reference_media_ids)
+    else:
+        result, error = await run_muse_media(kind="video", prompt=prompt, source_media_ids=source_media_ids)
+    if error and not flow and "muse" in error.lower():
+        error = _FLOW_HINT   # the person never set Muse up; point at what they actually use
+    return result, error
 
 
 # ── tool-call parsing ─────────────────────────────────────────────────
@@ -428,11 +517,7 @@ async def _tool_gen_image(board_id: int, args: dict) -> dict:
         raise ChatAgentError("reference_asset_ids must be a list")
     with get_session() as s:
         ref_mids = [_asset_media_id(s, int(aid), "image") for aid in ref_ids]
-    result, error = await run_muse_media(
-        kind="image",
-        prompt=prompt,
-        reference_media_ids=ref_mids or None,
-    )
+    result, error = await _generate_media("image", prompt, reference_media_ids=ref_mids or None)
     if error:
         return {"ok": False, "tool": "gen_image", "error": error}
     out = [m for m in (result.get("media_ids") or []) if m]
@@ -461,11 +546,7 @@ async def _tool_gen_video(board_id: int, args: dict) -> dict:
         raise ChatAgentError("source_asset_id is required (start-frame asset)")
     with get_session() as s:
         src_mid = _asset_media_id(s, int(source_aid))
-    result, error = await run_muse_media(
-        kind="video",
-        prompt=prompt,
-        source_media_ids=[src_mid],
-    )
+    result, error = await _generate_media("video", prompt, source_media_ids=[src_mid])
     if error:
         return {"ok": False, "tool": "gen_video", "error": error}
     out = [m for m in (result.get("media_ids") or []) if m]
@@ -662,8 +743,8 @@ async def _run_agent(
 
     _finish_run(
         run_id,
-        "Hết lượt suy nghĩ (12 turns) mà chưa xong. "
-        "Các bước đã làm:\n"
+        "The agent ran out of thinking turns (12) before it finished. "
+        "Steps done so far:\n"
         + "\n".join(
             f"- {o.get('tool')}: {'ok' if o.get('ok') else o.get('error', 'fail')}"
             for o in observations[-8:]
@@ -686,4 +767,4 @@ async def run_chat_agent(
         _finish_run(run_id, str(exc), failed=True)
     except Exception as exc:  # noqa: BLE001 — catch-all: run must settle
         logger.exception("chat_agent run %s crashed", run_id)
-        _finish_run(run_id, f"Agent gặp lỗi: {exc}"[:500], failed=True)
+        _finish_run(run_id, f"The agent hit an error: {exc}"[:500], failed=True)

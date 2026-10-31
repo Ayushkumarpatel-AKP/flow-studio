@@ -10,6 +10,7 @@ import {
 import { useBoardStore } from "../store/board";
 import { useChatStore } from "../store/chat";
 import {
+  api,
   getActivityList,
   getLlmProviders,
   uploadChatAttachments,
@@ -96,6 +97,8 @@ export function ChatDock() {
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [museAvailable, setMuseAvailable] = useState<boolean | null>(null);
+  // The chat thinks with whichever engine the user connected in Engines (Groq, Gemini…).
+  const [engine, setEngine] = useState<{ state: string; label: string | null } | null>(null);
   const [stepText, setStepText] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -117,6 +120,9 @@ export function ChatDock() {
         if (!alive) return;
         const muse = providers.find((p) => p.name === "muse");
         setMuseAvailable(muse ? muse.available : false);
+        const ov = await api<{ config: Record<string, { status: { state: string; engine: string | null } }>; providers: { id: string; label: string }[] }>("/api/engines");
+        const st = ov.config.chat?.status;
+        setEngine({ state: st?.state ?? "none", label: ov.providers.find((p) => p.id === st?.engine)?.label ?? null });
       } catch {
         // Network blip — keep stale state, retry next tick.
       }
@@ -206,11 +212,16 @@ export function ChatDock() {
     });
   }, []);
 
+  const engineReady = engine?.state === "ok" || engine?.state === "limited";
+  const chatReady = engineReady || museAvailable === true;
+  const checking = engine === null && museAvailable === null;
+  const brain = engineReady ? engine?.label ?? "AI" : museAvailable ? "Muse" : "No AI yet";
+
   const canSend =
     !pending &&
     !uploading &&
     activeRun === null &&
-    museAvailable === true &&
+    chatReady &&
     (text.trim().length > 0 || files.length > 0);
 
   const handleSend = useCallback(async () => {
@@ -309,16 +320,10 @@ export function ChatDock() {
       <div className="chat-dock__header">
         <span className="chat-dock__title">Chat AI</span>
         <span
-          className={`chat-dock__presence chat-dock__presence--${
-            museAvailable === null ? "loading" : museAvailable ? "ok" : "bad"
-          }`}
-          title={
-            museAvailable
-              ? "Muse is ready (muse2api or worker)"
-              : "Muse is not ready"
-          }
+          className={`chat-dock__presence chat-dock__presence--${checking ? "loading" : chatReady ? "ok" : "bad"}`}
+          title={chatReady ? `The chat thinks with ${brain}` : "No AI engine is connected yet"}
         >
-          {museAvailable === null ? "○" : museAvailable ? "●" : "○"} Muse
+          {checking ? "○" : chatReady ? "●" : "○"} {brain}
         </span>
         <button
           type="button"
@@ -330,11 +335,13 @@ export function ChatDock() {
         </button>
       </div>
 
-      {museAvailable === false && (
+      {!checking && !chatReady && (
         <div className="chat-dock__notice">
-          Muse is not ready — set <code>FLOWBOARD_MUSE2API_BASE</code> to point
-          at muse2api, or run{" "}
-          <code>python agent/scripts/muse_worker.py</code>, then send again.
+          The chat needs an AI engine to think with. Add a free Groq key (no card needed) and it will plan your board and
+          build it for you.{" "}
+          <button type="button" className="chat-dock__notice-btn" onClick={() => window.dispatchEvent(new Event("flowboard:open-engines"))}>
+            🔌 Add a key
+          </button>
         </div>
       )}
 

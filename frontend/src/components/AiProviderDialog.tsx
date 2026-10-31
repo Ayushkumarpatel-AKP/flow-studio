@@ -56,7 +56,7 @@ export function AiProviderDialog({ open, onClose, force = false }: AiProviderDia
       >
         <div className="ai-provider-dialog__header">
           <span className="ai-provider-dialog__title">
-            {force ? "Set up your AI providers" : "AI Providers"}
+            {force ? "Set up your AI providers" : "AI Providers · Advanced"}
           </span>
           {!force && (
             <button
@@ -76,6 +76,20 @@ export function AiProviderDialog({ open, onClose, force = false }: AiProviderDia
             effort are optional — then Apply to continue.
           </div>
         )}
+        <div className="ai-provider-dialog__easy">
+          <span>
+            <b>💡 Easier way:</b> paste your own key (Groq, Gemini, NVIDIA, OpenAI…) in <b>Engines</b> and it will power
+            auto-prompt, picture description and the planner too. This panel is only for the Claude/Codex command-line tools.
+          </span>
+          <button
+            onClick={() => {
+              onClose();
+              window.dispatchEvent(new Event("flowboard:open-engines"));
+            }}
+          >
+            🔌 Open Engines
+          </button>
+        </div>
         <AiProvidersSection />
       </div>
     </div>

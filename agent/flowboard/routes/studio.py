@@ -22,14 +22,24 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from flowboard.config import STORAGE_DIR
-from flowboard.services import media as media_service
-from flowboard.services import studio_render
+from flowboard.services import engines, media as media_service
+from flowboard.services import studio_render, subtitles, voice
 from flowboard.services.llm import run_llm
 from flowboard.services.llm.base import LLMError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/studio", tags=["studio"])
+
+
+async def _llm(job: str, user: str, system: str, timeout: float) -> str:
+    """Run a text job on the user's own engine (Groq, Gemini, …) when one is
+    configured, otherwise on the built-in Claude provider."""
+    try:
+        return await engines.chat(job, user, system_prompt=system, timeout=timeout)
+    except engines.EngineError as exc:
+        logger.info("studio %s: own engine unavailable (%s) — using built-in AI", job, exc)
+    return await run_llm("auto_prompt", user, system_prompt=system, timeout=timeout)
 
 STUDIO_DIR = STORAGE_DIR / "studio"
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -96,7 +106,7 @@ async def make_script(body: ScriptBody) -> dict[str, Any]:
     user = (f"Idea: {body.idea}\nNumber of panels: {body.panels}\n"
             f"Art style: {STYLE_PRESETS.get(body.style, body.style)}\nTone: {body.tone}")
     try:
-        raw = await run_llm("auto_prompt", user, system_prompt=_SCRIPT_SYSTEM, timeout=120.0)
+        raw = await _llm("script", user, _SCRIPT_SYSTEM, 120.0)
         data = _extract_json(raw)
         panels = data.get("panels") or []
         if not panels:
@@ -137,9 +147,63 @@ class PanelIn(BaseModel):
     bubbles: list[BubbleIn] = []
 
 
+class VoiceIn(BaseModel):
+    enabled: bool = False
+    engine: str = "edge"
+    left: str = ""
+    right: str = ""
+    speed: float = Field(default=1.0, ge=0.6, le=1.6)
+
+
+class CaptionsIn(BaseModel):
+    style: str = "off"        # off | karaoke | classic
+    bubbles: bool = True      # keep the speech bubbles on screen too
+
+
 class RenderBody(BaseModel):
     panels: list[PanelIn] = Field(min_length=1, max_length=24)
     format: str = "16:9"   # 16:9 | 9:16 | 1:1
+    voice: VoiceIn = VoiceIn()
+    captions: CaptionsIn = CaptionsIn()
+
+
+# ── voice ───────────────────────────────────────────────────────────────────
+
+@router.get("/voices")
+def voices() -> dict[str, Any]:
+    """Voice engines, which can be used right now, and a default man/woman pair for each."""
+    out = []
+    for e in voice.engine_list():
+        left, right = voice.default_voices(e["id"])
+        out.append({**e, "default_left": left, "default_right": right})
+    stt = subtitles._stt_provider()
+    # Best available voice: the user's pick in Engines, else the most natural one they have a key for.
+    available = {e["id"] for e in out if e["available"]}
+    chosen = engines.assigned_engine(engines._load(), "voice")
+    default = chosen if chosen in available else next(
+        (e for e in ("elevenlabs", "openai", "edge", "sapi") if e in available), None)
+    return {
+        "engines": out,
+        "default_engine": default,
+        "exact_timing": stt[0] if stt else None,   # engine that gives exact subtitle timing, if any
+    }
+
+
+class VoicePreviewBody(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    engine: str = "edge"
+    voice: str = ""
+    speed: float = Field(default=1.0, ge=0.6, le=1.6)
+
+
+@router.post("/voice-preview")
+async def voice_preview(body: VoicePreviewBody):
+    """Speak a short line so the user can hear a voice before choosing it."""
+    try:
+        path, _used = await asyncio.to_thread(voice.synthesize, body.text, body.engine, body.voice, body.speed)
+    except voice.VoiceError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not make that voice: {exc}")
+    return FileResponse(path, media_type="audio/mpeg" if path.suffix == ".mp3" else "audio/wav")
 
 
 async def _local_file(media_id: str) -> Path:
@@ -149,7 +213,7 @@ async def _local_file(media_id: str) -> Path:
     return got[2]
 
 
-async def _run_job(job_id: str, panels: list[PanelIn], fmt: str) -> None:
+async def _run_job(job_id: str, panels: list[PanelIn], fmt: str, voice_cfg: dict, captions_cfg: dict) -> None:
     job = _JOBS[job_id]
     try:
         spec: list[dict[str, Any]] = []
@@ -169,7 +233,7 @@ async def _run_job(job_id: str, panels: list[PanelIn], fmt: str) -> None:
         def progress(i: int, n: int) -> None:
             job["progress"] = i / n
 
-        await asyncio.to_thread(studio_render.render_video, spec, out, work, progress, fmt)
+        await asyncio.to_thread(studio_render.render_video, spec, out, work, progress, fmt, voice_cfg, captions_cfg)
         job.update(status="done", progress=1.0, file=f"/api/studio/files/{job_id}")
     except Exception as exc:  # surfaced to the UI as a readable error
         logger.exception("studio render failed")
@@ -182,7 +246,7 @@ async def render(body: RenderBody) -> dict[str, str]:
         raise HTTPException(status_code=503, detail="ffmpeg is not installed or not on PATH")
     job_id = uuid.uuid4().hex[:12]
     _JOBS[job_id] = {"status": "running", "progress": 0.0}
-    asyncio.create_task(_run_job(job_id, body.panels, body.format))
+    asyncio.create_task(_run_job(job_id, body.panels, body.format, body.voice.model_dump(), body.captions.model_dump()))
     return {"job_id": job_id}
 
 
@@ -239,7 +303,7 @@ async def improve(body: ImproveBody) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="kind must be idea, scene or dialogue")
     user = body.text if not body.context else f"Context: {body.context}\nText: {body.text}"
     try:
-        out = await run_llm("auto_prompt", user, system_prompt=system, timeout=90.0)
+        out = await _llm("rewrite", user, system, 90.0)
         out = (out or "").strip().strip('"')
         if not out:
             raise ValueError("empty reply")
@@ -260,7 +324,7 @@ async def ideas(body: IdeasBody) -> dict[str, Any]:
               "Make them very different from each other.")
     user = f"Give {body.count} ideas." + (f" Theme: {body.theme}" if body.theme else "")
     try:
-        raw = await run_llm("auto_prompt", user, system_prompt=system, timeout=90.0)
+        raw = await _llm("ideas", user, system, 90.0)
         data = _extract_json(raw)
         items = [i for i in (data.get("ideas") or []) if i.get("idea")]
         if not items:

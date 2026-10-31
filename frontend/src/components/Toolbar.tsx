@@ -1,9 +1,19 @@
-import { useState, useRef, type KeyboardEvent } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useBoardStore } from "../store/board";
 import { ActivityBell } from "./activity/ActivityBell";
 import { AiProviderBadge } from "./AiProviderBadge";
 
+// The Engines drawer is shared with Studio and only downloaded when first opened.
+const Engines = lazy(() => import("../studio/Engines").then((m) => ({ default: m.Engines })));
+const OPEN_ENGINES = "flowboard:open-engines";
+
 export function Toolbar() {
+  const [showEngines, setShowEngines] = useState(false);
+  useEffect(() => {
+    const open = () => setShowEngines(true);
+    window.addEventListener(OPEN_ENGINES, open);
+    return () => window.removeEventListener(OPEN_ENGINES, open);
+  }, []);
   const boardName = useBoardStore((s) => s.boardName);
   const renameBoard = useBoardStore((s) => s.renameBoard);
 
@@ -59,9 +69,17 @@ export function Toolbar() {
 
       <div className="toolbar-actions">
         <ActivityBell />
+        <button className="toolbar-engines" onClick={() => setShowEngines(true)} title="Add your own AI keys (Groq, Gemini, NVIDIA, OpenAI…)">
+          🔌 Engines
+        </button>
         <AiProviderBadge />
         <span className="made-by" title="Made by Ayush">Made by Ayush</span>
       </div>
+      {showEngines && (
+        <Suspense fallback={null}>
+          <Engines onClose={() => setShowEngines(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

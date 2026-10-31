@@ -21,6 +21,8 @@ from typing import Any, Optional
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from flowboard.services import subtitles, voice as voice_mod
+
 logger = logging.getLogger(__name__)
 
 FPS = 30
@@ -158,17 +160,70 @@ def _sfx(text: str, w: int, h: int, pos: Optional[tuple[float, float]] = None) -
     return ov
 
 
-def _run(cmd: list[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+def _run(cmd: list[str], cwd: Optional[Path] = None) -> None:
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-400:]}")
 
 
-def _render_panel(ff: str, panel: dict[str, Any], idx: int, work: Path, w: int, h: int) -> Path:
+_FONT_FAMILY = {"comicbd.ttf": "Comic Sans MS", "arialbd.ttf": "Arial", "DejaVuSans-Bold.ttf": "DejaVu Sans"}
+
+
+def _caption_font(work: Path) -> str:
+    """Copy a bold font next to the subtitle file and return its family name."""
+    for path in _BOLD_FONTS:
+        if os.path.exists(path):
+            shutil.copy(path, work / "capfont.ttf")
+            return _FONT_FAMILY.get(os.path.basename(path), "Arial")
+    return "Arial"
+
+
+def _plan_panel(panel: dict[str, Any], voice: Optional[dict], captions: Optional[dict]) -> list[dict[str, Any]]:
+    """Decide when each line appears (and is spoken) in a panel.
+
+    With voiceover or captions on, lines follow each other as long as they take to
+    say; otherwise the original fixed rhythm is kept.
+    """
+    speaking = bool(voice and voice.get("enabled"))
+    style = (captions or {}).get("style", "off")
+    timed = speaking or style != "off"
+    speed = float((voice or {}).get("speed") or 1.0)
+    items: list[dict[str, Any]] = []
+    t = 0.8
+    for k, b in enumerate(panel.get("bubbles") or []):
+        text = (b.get("text") or "").strip()
+        if not text:
+            continue
+        audio: Optional[Path] = None
+        if speaking:
+            vid = (voice.get("right") if b.get("side") == "right" else voice.get("left")) or ""
+            try:
+                audio, _used = voice_mod.synthesize(text, voice.get("engine", "edge"), vid, speed)
+                dur = max(0.6, voice_mod.audio_duration(audio))
+            except voice_mod.VoiceError as exc:
+                logger.info("no voice for a line: %s", exc)
+                audio, dur = None, subtitles.estimate_duration(text)
+        else:
+            dur = subtitles.estimate_duration(text) if timed else 2.0
+        start = t if timed else 1.0 + 2.0 * k
+        words = subtitles.line_words(text, audio, dur) if style != "off" else []
+        items.append({"k": k, "bubble": b, "text": text, "audio": audio, "start": start, "end": start + dur, "words": words})
+        t = start + dur + 0.35
+    return items
+
+
+def _render_panel(ff: str, panel: dict[str, Any], idx: int, work: Path, w: int, h: int,
+                  voice: Optional[dict] = None, captions: Optional[dict] = None) -> Path:
     still: Optional[Path] = panel.get("still_path")
     clip: Optional[Path] = panel.get("clip_path")
     animated = bool(clip)
-    dur = CLIP_SECONDS if animated else STILL_SECONDS
+    base = CLIP_SECONDS if animated else STILL_SECONDS
+    cap_cfg = captions or {}
+    style = cap_cfg.get("style", "off")
+    show_bubbles = cap_cfg.get("bubbles", True)
+
+    items = _plan_panel(panel, voice, captions)
+    dur = max(base, (items[-1]["end"] + 0.9) if items else 0.0)
 
     layers: list[tuple[Path, float]] = []
     caption = (panel.get("caption") or "").strip()
@@ -182,25 +237,30 @@ def _render_panel(ff: str, panel: dict[str, Any], idx: int, work: Path, w: int, 
         pos = (panel["sfx_x"], panel["sfx_y"]) if panel.get("sfx_x") is not None and panel.get("sfx_y") is not None else None
         _sfx(sfx, w, h, pos).save(p)
         layers.append((p, 0.6))
-    for k, b in enumerate(panel.get("bubbles") or []):
-        if not (b.get("text") or "").strip():
-            continue
-        p = work / f"{idx}_b{k}.png"
-        _bubble(b, k, w, h).save(p)
-        layers.append((p, 1.0 + 2.0 * k))
+    if show_bubbles:
+        for it in items:
+            p = work / f"{idx}_b{it['k']}.png"
+            _bubble(it["bubble"], it["k"], w, h).save(p)
+            layers.append((p, it["start"]))
 
     cmd = [ff, "-y", "-loglevel", "error"]
     if animated:
         cmd += ["-i", str(clip)]
     else:
-        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", str(still)]
+        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", f"{dur:.3f}", "-i", str(still)]
     for p, _ in layers:
-        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", str(p)]
-    cmd += ["-f", "lavfi", "-t", str(dur), "-i", "anullsrc=r=44100:cl=stereo"]
-    silent = len(layers) + 1
+        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", f"{dur:.3f}", "-i", str(p)]
+    voiced = [(it["audio"], it["start"]) for it in items if it["audio"] is not None]
+    a_first = len(layers) + 1
+    for path, _ in voiced:
+        cmd += ["-i", str(path)]
+    silent = a_first + len(voiced)
+    cmd += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=44100:cl=stereo"]
 
+    extra = max(0.0, dur - CLIP_SECONDS)
     if animated:
-        fc = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},fps={FPS}[v0];"
+        hold = f",tpad=stop_mode=clone:stop_duration={extra:.3f}" if extra > 0.05 else ""
+        fc = f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},fps={FPS}{hold}[v0];"
     else:
         zw, zh = int(w * 1.25) // 2 * 2, int(h * 1.25) // 2 * 2
         fc = (f"[0:v]scale={zw}:{zh}:force_original_aspect_ratio=increase,crop={zw}:{zh},"
@@ -208,32 +268,58 @@ def _render_panel(ff: str, panel: dict[str, Any], idx: int, work: Path, w: int, 
               f"d=1:s={w}x{h}:fps={FPS}[v0];")
     last = "v0"
     for n, (_, start) in enumerate(layers, 1):
-        fc += (f"[{n}:v]format=rgba,fade=t=in:st={start}:d=0.2:alpha=1[o{n}];"
+        fc += (f"[{n}:v]format=rgba,fade=t=in:st={start:.3f}:d=0.2:alpha=1[o{n}];"
                f"[{last}][o{n}]overlay=0:0:format=auto[v{n}];")
         last = f"v{n}"
-    fc += (f"[{last}]fade=t=in:st=0:d=0.3,fade=t=out:st={dur - 0.3}:d=0.3,"
-           f"format=yuv420p[out];")
+
+    # Burned-in captions: karaoke (word lights up as it is spoken) or classic.
+    lines = [{"start": it["start"], "end": it["end"] + 0.25, "words": it["words"]} for it in items if it["words"]]
+    if style != "off" and lines:
+        u = _unit(w, h)
+        ass = subtitles.build_ass(lines, w, h, karaoke=(style == "karaoke"), font=_caption_font(work),
+                                  size=int(62 * u), margin_v=int(104 * u))
+        (work / f"{idx}.ass").write_text(ass, encoding="utf-8")
+        fc += f"[{last}]ass=filename={idx}.ass:fontsdir=.[vs];"
+        last = "vs"
+
+    fc += f"[{last}]fade=t=in:st=0:d=0.3,fade=t=out:st={dur - 0.3:.3f}:d=0.3,format=yuv420p[out];"
+
+    chains: list[str] = []
+    labels: list[str] = []
     if animated:
-        fc += (f"[0:a]aresample=44100,aformat=channel_layouts=stereo,"
-               f"afade=t=in:d=0.3,afade=t=out:st={dur - 0.3}:d=0.3[aout]")
-    else:
-        fc += f"[{silent}:a]anull[aout]"
+        gain = 0.35 if voiced else 1.0
+        chains.append(f"[0:a]aresample=44100,aformat=channel_layouts=stereo,volume={gain}[ab]")
+        labels.append("[ab]")
+    chains.append(f"[{silent}:a]anull[as]")
+    labels.append("[as]")
+    for j, (_, st) in enumerate(voiced):
+        chains.append(f"[{a_first + j}:a]aresample=44100,aformat=channel_layouts=stereo,"
+                      f"adelay={int(st * 1000)}:all=1[va{j}]")
+        labels.append(f"[va{j}]")
+    chains.append("".join(labels) + f"amix=inputs={len(labels)}:duration=longest:normalize=0,"
+                  f"atrim=0:{dur:.3f},afade=t=in:d=0.3,afade=t=out:st={dur - 0.3:.3f}:d=0.3[aout]")
+    fc += ";".join(chains)
 
     out = work / f"clip_{idx:02d}.mp4"
-    cmd += ["-filter_complex", fc, "-map", "[out]", "-map", "[aout]", "-t", str(dur),
+    cmd += ["-filter_complex", fc, "-map", "[out]", "-map", "[aout]", "-t", f"{dur:.3f}",
             "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out)]
-    _run(cmd)
+    _run(cmd, cwd=work)
     return out
 
 
 def render_video(panels: list[dict[str, Any]], out_path: Path, work: Path,
-                 on_progress=None, fmt: str = "16:9") -> Path:
+                 on_progress=None, fmt: str = "16:9",
+                 voice: Optional[dict] = None, captions: Optional[dict] = None) -> Path:
     """Render ``panels`` to ``out_path``. Blocking — call from a thread.
 
     Each panel: ``still_path`` and/or ``clip_path`` (a local file), ``caption``,
     ``sfx`` (+ optional ``sfx_x``/``sfx_y``), ``bubbles`` = [{"text", "side",
     "x", "y", "w", "tx", "ty"}].
+
+    ``voice`` = {"enabled", "engine", "left", "right", "speed"} reads each bubble
+    aloud and paces the panel to it; ``captions`` = {"style": off|karaoke|classic,
+    "bubbles": bool} burns subtitles in.
     """
     ff = ffmpeg_path()
     if ff is None:
@@ -244,7 +330,7 @@ def render_video(panels: list[dict[str, Any]], out_path: Path, work: Path,
     for i, panel in enumerate(panels, 1):
         if not panel.get("still_path") and not panel.get("clip_path"):
             raise RuntimeError(f"panel {i} has no image or clip")
-        clips.append(_render_panel(ff, panel, i, work, w, h))
+        clips.append(_render_panel(ff, panel, i, work, w, h, voice, captions))
         if on_progress:
             on_progress(i, len(panels))
     listing = work / "list.txt"

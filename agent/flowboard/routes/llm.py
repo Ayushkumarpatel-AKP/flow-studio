@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from flowboard.services import engines
 from flowboard.services.llm import registry, secrets
 from flowboard.services.llm.base import LLMError
 from flowboard.services import claude_cli
@@ -299,7 +300,8 @@ def get_config() -> dict:
             "model": entry.get("model"),
             "effort": entry.get("effort"),
         }
-    out["configured"] = secrets.is_active_providers_configured()
+    # Engines (your own keys) count too: it is now the main place to pick AI.
+    out["configured"] = secrets.is_active_providers_configured() or engines.covers_canvas()
     return out
 
 

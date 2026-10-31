@@ -10,12 +10,27 @@ import {
 } from "../api/client";
 import { STYLE_META, TEMPLATES, TONES, type StoryTemplate } from "./templates";
 import { Editor } from "./Editor";
+import { Engines } from "./Engines";
+import { DEFAULT_CAPTIONS, DEFAULT_VOICE, VoiceBox, type CaptionCfg, type VoiceCfg } from "./VoiceBox";
 import { FORMATS, type Format, type Panel } from "./types";
 import "./studio.css";
 
 type ScriptResp = { title: string; characters?: string; panels: Omit<Panel, "state">[]; note?: string };
 type StyleResp = { styles: Record<string, string>; suffix: string };
 type Idea = { title: string; idea: string };
+
+// Small remembered settings. Storage can be blocked, so never let it break the page.
+function load<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? { ...fallback, ...(JSON.parse(raw) as T) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function save(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isExt = (h: unknown) => !!(h as { extension_connected?: boolean }).extension_connected;
@@ -95,6 +110,11 @@ export function Studio() {
   const [animate, setAnimate] = useState(false);
   const [format, setFormat] = useState<Format>("16:9");
   const [selected, setSelected] = useState(0);
+  const [showEngines, setShowEngines] = useState(false);
+  const [voiceCfg, setVoiceCfg] = useState<VoiceCfg>(() => load("studio.voice", DEFAULT_VOICE));
+  const [capCfg, setCapCfg] = useState<CaptionCfg>(() => load("studio.captions", DEFAULT_CAPTIONS));
+  useEffect(() => save("studio.voice", voiceCfg), [voiceCfg]);
+  useEffect(() => save("studio.captions", capCfg), [capCfg]);
   const [videoUrl, setVideoUrl] = useState("");
   const [progress, setProgress] = useState("");
   const stop = useRef(false);
@@ -313,6 +333,8 @@ export function Studio() {
         method: "POST",
         body: JSON.stringify({
           format,
+          voice: voiceCfg,
+          captions: capCfg,
           panels: panels.map((p) => ({ media_id: p.mediaId, video_media_id: p.videoId, caption: p.caption, sfx: p.sfx, sfx_x: p.sfxX, sfx_y: p.sfxY, bubbles: p.bubbles })),
         }),
       });
@@ -350,7 +372,9 @@ export function Studio() {
           <span className={appUp ? "ok" : "no"}>● App</span>
           <span className={ext ? "ok" : "no"}>● Extension</span>
           <span className={projectId ? "ok" : "no"}>● Project</span>
+          <button className="eng-btn" onClick={() => setShowEngines(true)} title="Add your own AI keys">🔌 Engines</button>
         </div>
+        {showEngines && <Engines onClose={() => setShowEngines(false)} />}
       </header>
 
       {/* ── hero + templates ────────────────────────────────── */}
@@ -375,8 +399,28 @@ export function Studio() {
       {/* ── workspace ───────────────────────────────────────── */}
       <div className="st-work" ref={workRef}>
         <aside className="st-side">
-          <div className="box">
-            <h2>Your idea</h2>
+          {/* Setup comes first, but only while something still blocks drawing. */}
+          {!setupOk && (
+            <details className="box acc warn" open>
+              <summary>Finish setup</summary>
+              <ul className="checks">
+                <li className={appUp ? "ok" : "no"}>{appUp ? "✓" : "○"} Flowboard app is running</li>
+                <li className={ext ? "ok" : "no"}>{ext ? "✓" : "○"} Chrome extension connected{!ext && " — load it, then open flow.google.com signed in"}</li>
+                <li className={projectId ? "ok" : "no"}>{projectId ? "✓" : "○"} Flow project linked</li>
+              </ul>
+              {!projectId && ext && (
+                <div className="link-row">
+                  <input value={projectInput} onChange={(e) => setProjectInput(e.target.value)} placeholder="Paste your Flow project link" />
+                  <button onClick={() => void pinProject()}>Link</button>
+                </div>
+              )}
+              {setupMsg && !projectId && <p className="hint">{setupMsg.includes("NO_FLOW_PROJECT") ? "Create a project on flow.google.com, then paste its link above." : setupMsg}</p>}
+              <button className="ghost" onClick={() => void checkSetup()}>Re-check</button>
+            </details>
+          )}
+
+          <details className="box acc" open>
+            <summary><b>1</b> Your idea</summary>
             <textarea rows={4} value={idea} onChange={(e) => setIdea(e.target.value)}
               placeholder="e.g. Two stickmen survive a zombie outbreak during a solar eclipse" />
             <div className="btn-row">
@@ -395,10 +439,11 @@ export function Studio() {
                 ))}
               </ul>
             )}
-          </div>
+          </details>
 
-          <div className="box">
-            <h2>Art style</h2>
+          <details className="box acc" open>
+            <summary><b>2</b> Look &amp; shape</summary>
+            <h3 className="acc-label">Art style</h3>
             <div className="chips">
               {Object.keys(styles?.styles ?? STYLE_META).map((k) => (
                 <button key={k} className={`chip ${style === k ? "on" : ""}`} onClick={() => setStyle(k)}>
@@ -406,13 +451,13 @@ export function Studio() {
                 </button>
               ))}
             </div>
-            <h2>Mood</h2>
+            <h3 className="acc-label">Mood</h3>
             <div className="chips">
               {TONES.map((t) => (
                 <button key={t.key} className={`chip ${tone === t.key ? "on" : ""}`} onClick={() => setTone(t.key)}>{t.label}</button>
               ))}
             </div>
-            <h2>Video shape</h2>
+            <h3 className="acc-label">Video shape</h3>
             <div className="chips">
               {FORMATS.map((f) => (
                 <button key={f.key} className={`chip ${format === f.key ? "on" : ""}`} onClick={() => setFormat(f.key)} title={f.hint}>
@@ -421,17 +466,21 @@ export function Studio() {
               ))}
             </div>
             {panels.some((p) => p.mediaId) && <small className="muted">Changing the shape? Redraw panels so the pictures fit.</small>}
-            <h2>Panels: {count}</h2>
+            <h3 className="acc-label">Panels: {count} <small className="muted">≈ {count * 6} seconds</small></h3>
             <input type="range" min={3} max={12} value={count} onChange={(e) => setCount(Number(e.target.value))} />
-            <small className="muted">≈ {count * 6} seconds of video</small>
-            <button className="go" disabled={idea.trim().length < 3 || !!busy} onClick={() => void writeScript()}>
-              {busy === "script" ? "Writing…" : panels.length ? "↻ Rewrite the script" : "✍️ Write the script"}
-            </button>
-          </div>
+          </details>
+
+          {/* The main action stays visible no matter which sections are folded. */}
+          <button className="go side-go" disabled={idea.trim().length < 3 || !!busy} onClick={() => void writeScript()}>
+            {busy === "script" ? "Writing…" : panels.length ? "↻ Rewrite the script" : "✍️ Write the script"}
+          </button>
+
+          <VoiceBox voice={voiceCfg} captions={capCfg} onVoice={setVoiceCfg} onCaptions={setCapCfg}
+            onOpenEngines={() => setShowEngines(true)} />
 
           {setupOk && (
-            <div className="box proj">
-              <h2>Flow project</h2>
+            <details className="box acc proj">
+              <summary>Flow project</summary>
               <p className="muted">Using <code>…{projectId?.slice(-8)}</code>. Keep that project open in your Flow tab.</p>
               {changing ? (
                 <div className="link-row">
@@ -440,25 +489,7 @@ export function Studio() {
                 </div>
               ) : <button className="ghost" onClick={() => setChanging(true)}>Change project</button>}
               {setupMsg && <p className="hint">{setupMsg}</p>}
-            </div>
-          )}
-          {!setupOk && (
-            <div className="box warn">
-              <h2>Finish setup</h2>
-              <ul className="checks">
-                <li className={appUp ? "ok" : "no"}>{appUp ? "✓" : "○"} Flowboard app is running</li>
-                <li className={ext ? "ok" : "no"}>{ext ? "✓" : "○"} Chrome extension connected{!ext && " — load it, then open flow.google.com signed in"}</li>
-                <li className={projectId ? "ok" : "no"}>{projectId ? "✓" : "○"} Flow project linked</li>
-              </ul>
-              {!projectId && ext && (
-                <div className="link-row">
-                  <input value={projectInput} onChange={(e) => setProjectInput(e.target.value)} placeholder="Paste your Flow project link" />
-                  <button onClick={() => void pinProject()}>Link</button>
-                </div>
-              )}
-              {setupMsg && !projectId && <p className="hint">{setupMsg.includes("NO_FLOW_PROJECT") ? "Create a project on flow.google.com, then paste its link above." : setupMsg}</p>}
-              <button className="ghost" onClick={() => void checkSetup()}>Re-check</button>
-            </div>
+            </details>
           )}
         </aside>
 

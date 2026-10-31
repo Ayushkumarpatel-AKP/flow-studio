@@ -7,7 +7,9 @@ from flowboard.db.models import (
     Asset,
     Board,
     BoardFlowProject,
+    ChatAttachment,
     ChatMessage,
+    ChatRun,
     Edge,
     Node,
     PipelineRun,
@@ -245,6 +247,12 @@ def delete_board(board_id: int):
         s.exec(sql_delete(Edge).where(Edge.board_id == board_id))
         s.exec(sql_delete(Node).where(Node.board_id == board_id))
         s.exec(sql_delete(Plan).where(Plan.board_id == board_id))
+        # Chat children first: runs and attachments point at messages, so deleting the
+        # messages alone fails with a foreign-key error once anyone has used the chat.
+        s.exec(sql_delete(ChatRun).where(ChatRun.board_id == board_id))
+        msg_ids = [m.id for m in s.exec(select(ChatMessage).where(ChatMessage.board_id == board_id)).all()]
+        if msg_ids:
+            s.exec(sql_delete(ChatAttachment).where(ChatAttachment.message_id.in_(msg_ids)))
         s.exec(sql_delete(ChatMessage).where(ChatMessage.board_id == board_id))
         s.exec(sql_delete(BoardFlowProject).where(BoardFlowProject.board_id == board_id))
         s.delete(board)

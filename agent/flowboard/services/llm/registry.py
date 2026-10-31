@@ -22,6 +22,7 @@ from .gemini import GeminiProvider
 from .muse import MuseProvider
 from .openai import OpenAIProvider
 from . import secrets
+from flowboard.services import engines
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,20 @@ async def run_llm(
          eat a longer subprocess / HTTP timeout.
       4. Effort re-check — see below.
       5. Dispatch.
+
+    Before any of that, the user's own keys from the Engines screen get first
+    refusal: Engines is the one place a person picks AI, so a connected Groq /
+    Gemini / OpenAI key serves auto-prompt, vision and the planner too. Only when
+    none of them can do the job does this fall through to the provider
+    configured in the older AI Providers panel (e.g. the Claude CLI).
     """
+    job = engines.FEATURE_JOBS.get(feature)
+    if job is not None:
+        try:
+            return await engines.chat(job, user_prompt, system_prompt=system_prompt,
+                                      images=attachments, timeout=timeout)
+        except engines.EngineError as exc:
+            logger.debug("Engines could not serve %s (%s); using the configured provider", feature, exc)
     config = secrets.read_feature_config()
     entry = config.get(feature)
     if entry is None:
