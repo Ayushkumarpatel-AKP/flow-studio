@@ -2,112 +2,67 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Comic+Neue:wght@700&display=swap" rel="stylesheet">
   <title>Flowboard Bridge</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+    :root { --ink:#12101c; --paper:#fff3cf; --yellow:#ffd23f; --red:#ef233c; --blue:#2f6bff; --pink:#ff5d9e; --green:#1f9d63; }
     body {
-      width: 260px;
-      background: #14161c;
-      color: #e6e8ec;
-      font-family: system-ui, sans-serif;
-      font-size: 12px;
-      line-height: 1.5;
-      margin: 0;
-      padding: 0;
+      width: 340px; background: var(--paper); color: var(--ink);
+      background-image: radial-gradient(rgba(18,16,28,.13) 1.2px, transparent 1.3px); background-size: 12px 12px;
+      font-family: "Comic Neue", "Comic Sans MS", system-ui, sans-serif; font-weight: 700; font-size: 13px; line-height: 1.45;
     }
-
     header {
-      display: flex;
-      align-items: baseline;
-      gap: 6px;
-      padding: 12px 12px 8px;
-      border-bottom: 1px solid #23263a;
+      display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 10px 12px;
+      background: var(--yellow); border-bottom: 3px solid var(--ink);
     }
-
-    .header-title {
-      font-size: 14px;
-      font-weight: 700;
-      color: #e6e8ec;
+    .header-title { font-family: "Bangers", Impact, sans-serif; font-weight: 400; font-size: 24px; letter-spacing: .06em; text-shadow: 2px 2px 0 #fff; }
+    .header-version { font-size: 11px; background: #fff; border: 2px solid var(--ink); border-radius: 99px; padding: 0 8px; }
+    .checklist, .section, .hint, #recent, .actions { margin: 10px 12px 0; }
+    .checklist { background: #fff; border: 3px solid var(--ink); border-radius: 10px; box-shadow: 3px 3px 0 var(--ink); padding: 6px 10px; }
+    .checklist div { display: flex; gap: 6px; padding: 1px 0; }
+    .checklist .ok { color: var(--green); } .checklist .no { color: var(--red); }
+    .hint {
+      padding: 6px 10px; background: #fff0b8; border: 2px dashed var(--ink); border-radius: 8px; display: none;
     }
-
-    .header-version {
-      font-size: 11px;
-      color: #6b7280;
-    }
-
-    .section {
-      padding: 8px 12px;
-      border-bottom: 1px solid #23263a;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .section-label {
-      color: #6b7280;
-      min-width: 52px;
-      flex-shrink: 0;
-    }
-
-    .section-value {
-      color: #e6e8ec;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .dot-connected { color: #6ee7b7; }
-    .dot-running   { color: #f5b301; }
-    .dot-offline   { color: #6b7280; }
-
-    .error-value {
-      color: #ef4444;
-      font-size: 11px;
-    }
-
-    .actions {
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
+    .section { display: flex; align-items: center; gap: 8px; padding: 4px 10px; background: #fff; border: 2px solid var(--ink); border-radius: 8px; }
+    .section-label { min-width: 62px; font-family: "Bangers", Impact, sans-serif; font-weight: 400; letter-spacing: .06em; font-size: 15px; }
+    .section-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dot-connected { color: var(--green); } .dot-running { color: var(--blue); } .dot-offline { color: var(--red); }
+    .error-value { color: var(--red); white-space: normal; }
+    .recent-title { margin: 12px 12px 0; font-family: "Bangers", Impact, sans-serif; font-weight: 400; letter-spacing: .06em; font-size: 15px; }
+    #recent { max-height: 120px; overflow-y: auto; padding: 4px 10px; background: #fff; border: 2px solid var(--ink); border-radius: 8px; }
+    #recent .row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+    #recent .row .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #recent .done { color: var(--green); } #recent .failed { color: var(--red); } #recent .run { color: var(--blue); }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     button {
-      width: 100%;
-      padding: 6px 10px;
-      background: #23263a;
-      color: #a0a8c0;
-      border: 1px solid #2e3250;
-      border-radius: 8px;
-      font-family: system-ui, sans-serif;
-      font-size: 12px;
-      cursor: pointer;
-      text-align: left;
-      transition: background 0.12s, color 0.12s;
+      font: inherit; font-weight: 700; padding: 7px 8px; cursor: pointer; background: #fff; color: var(--ink);
+      border: 2px solid var(--ink); border-radius: 8px; box-shadow: 2px 2px 0 var(--ink); transition: transform .08s, box-shadow .08s;
     }
-
-    button:hover {
-      background: #2a2e4a;
-      color: #e6e8ec;
-    }
-
-    button#btn-toggle.reconnect {
-      color: #6ee7b7;
-      border-color: #1e3a32;
-    }
-
-    button#btn-toggle.disconnect {
-      color: #ef4444;
-      border-color: #3a1e1e;
-    }
+    button:hover { background: var(--yellow); transform: translate(-1px,-1px); box-shadow: 3px 3px 0 var(--ink); }
+    button:active { transform: translate(2px,2px); box-shadow: none; }
+    button#btn-studio { grid-column: 1 / -1; background: var(--red); color: #fff; font-family: "Bangers", Impact, sans-serif; font-weight: 400; font-size: 18px; letter-spacing: .08em; text-shadow: 1px 1px 0 var(--ink); }
+    button#btn-studio:hover { background: var(--blue); }
+    button#btn-toggle.reconnect { color: var(--green); } button#btn-toggle.disconnect { color: var(--red); }
+    footer { margin: 12px 0 0; padding: 8px; text-align: center; border-top: 3px solid var(--ink); background: var(--yellow);
+      font-family: "Bangers", Impact, sans-serif; letter-spacing: .1em; font-size: 15px; }
+    footer b { background: var(--pink); color: #fff; border: 2px solid var(--ink); border-radius: 6px; padding: 0 9px; text-shadow: 1px 1px 0 var(--ink); }
   </style>
 </head>
 <body>
   <header>
     <span class="header-title">Flowboard Bridge</span>
-    <span class="header-version">v0.0.2</span>
+    <span class="header-version">v0.1.3</span>
   </header>
+
+  <div class="checklist" id="checklist">
+    <div id="ck-agent">○ Flowboard app running</div>
+    <div id="ck-tab">○ Flow tab open (flow.google.com)</div>
+    <div id="ck-key">○ Signed in to Flow</div>
+    <div id="ck-proj">○ Flow project detected</div>
+  </div>
+  <div class="hint" id="hint"></div>
 
   <div class="section">
     <span class="section-label">Status</span>
@@ -129,11 +84,17 @@
     <span class="section-value error-value" id="error-row"></span>
   </div>
 
+  <div class="recent-title">Recent requests</div>
+  <div id="recent"><div class="row"><span class="t">none yet</span></div></div>
+
   <div class="actions">
+    <button id="btn-studio">Open Studio</button>
     <button id="btn-flow-tab">Open Flow tab</button>
     <button id="btn-refresh">Refresh token</button>
     <button id="btn-toggle" class="disconnect">Disconnect</button>
   </div>
+
+  <footer>Made by <b>Ayush</b></footer>
 
   <script src="popup.js"></script>
 </body>

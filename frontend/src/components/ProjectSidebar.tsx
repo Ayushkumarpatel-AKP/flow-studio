@@ -264,8 +264,8 @@ export function ProjectSidebar() {
           {flowListing && !flowListing.available && (
             <div className="project-sidebar__sync-note">
               {flowListing.pinned_project_id
-                ? "Mọi board generate vào Flow project đã ghim. Đổi ở Settings → Google Flow project."
-                : "Chưa ghim Flow project nào — generate sẽ lỗi. Mở Settings → Google Flow project và dán uuid."}
+                ? "Every board generates into the pinned Flow project. Change it in Settings → Google Flow project."
+                : "No Flow project pinned — generation will fail. Open Settings → Google Flow project and paste its id."}
             </div>
           )}
           {syncError && (
@@ -315,7 +315,7 @@ export function ProjectSidebar() {
                         onClick={() => switchBoard(b.id)}
                         title={
                           isOrphan
-                            ? `${b.name} — Flow project ${status?.flow_project_id ?? ""} không tồn tại trên Google Flow. Mở Settings → Google Flow project và dán uuid mới; các board sẽ được trỏ lại.`
+                            ? `${b.name} — Flow project ${status?.flow_project_id ?? ""} does not exist on Google Flow. Open Settings → Google Flow project and paste a new id; boards will be re-pointed.`
                             : b.name
                         }
                       >
@@ -397,9 +397,9 @@ export function ProjectSidebar() {
               Delete project?
             </h2>
             <p className="project-modal__hint">
-              <strong>"{deleteTarget.name}"</strong> sẽ bị xoá vĩnh viễn cùng
-              với tất cả nodes, edges, generations, và assets bên trong. Không
-              thể khôi phục.
+              <strong>"{deleteTarget.name}"</strong> will be permanently deleted along
+              with all nodes, edges, generations and assets inside it. This
+              cannot be undone.
             </p>
             <div className="project-modal__actions">
               <button
@@ -442,7 +442,7 @@ export function ProjectSidebar() {
               New project
             </h2>
             <p className="project-modal__hint">
-              Tên project hiển thị trong sidebar. Có thể đổi sau.
+              The project name shown in the sidebar. You can rename it later.
             </p>
             <input
               ref={newDialogInputRef}

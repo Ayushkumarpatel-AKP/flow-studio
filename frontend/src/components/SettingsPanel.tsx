@@ -19,7 +19,6 @@ const APP_VERSION: string = packageJson.version;
 const UUID_ANYWHERE =
   /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 
-const COMMUNITY_URL = "https://www.facebook.com/groups/flowkit.flowboard.community";
 
 /**
  * Dashboard Settings popover anchored to the AccountPanel gear button.
@@ -507,15 +506,8 @@ export function SettingsPanel({
           </span>
         </div>
         <div className="settings-panel__about-row">
-          <span className="settings-panel__about-key">Community</span>
-          <a
-            className="settings-panel__about-link"
-            href={COMMUNITY_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            FlowKit & Flowboard on Facebook →
-          </a>
+          <span className="settings-panel__about-key">Made by</span>
+          <span className="settings-panel__about-value">Ayush</span>
         </div>
       </div>
 

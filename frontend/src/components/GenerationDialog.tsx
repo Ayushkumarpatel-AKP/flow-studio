@@ -636,7 +636,7 @@ export function GenerationDialog() {
     if (isCharacter) {
       const built = buildCharacterPrompt(charGender, charCountry, charVibe, charExtras);
       // Stamp the picker selections directly onto the node so the detail
-      // panel can show "Country: Nhật Bản · Vibe: Douyin" later. These
+      // panel can show "Country: Japan · Vibe: Douyin" later. These
       // choices don't round-trip through the backend params (they're
       // baked into the prompt text), so we persist them here at dispatch
       // time. patchNode merges, so this fires alongside the generation
@@ -832,10 +832,10 @@ export function GenerationDialog() {
               }}
               placeholder={
                 isVideo
-                  ? "Bỏ trống để tự sinh motion prompt từ source image ✨"
+                  ? "Leave empty to auto-write a motion prompt from the source image ✨"
                   : isPrompt
-                  ? "Nhập prompt mồi để feed cho downstream image / video…"
-                  : "Bỏ trống để tự generate prompt từ upstream nodes ✨"
+                  ? "Type a seed prompt to feed the downstream image / video…"
+                  : "Leave empty to auto-generate a prompt from upstream nodes ✨"
               }
               disabled={isWorking}
               readOnly={hasStoryboardUpstream}
@@ -857,8 +857,8 @@ export function GenerationDialog() {
             {isWorking && (
               <p className="gen-dialog__hint">
                 {node?.data.aiBriefStatus === "pending"
-                  ? "✨ Đang phân tích image…"
-                  : "✨ Đang dựng prompt từ upstream context…"}
+                  ? "✨ Analysing the image…"
+                  : "✨ Building a prompt from upstream context…"}
               </p>
             )}
           </div>
@@ -884,7 +884,7 @@ export function GenerationDialog() {
             </div>
 
             <div className="gen-dialog__field">
-              <span className="gen-dialog__label">Quốc gia</span>
+              <span className="gen-dialog__label">Country</span>
               <div className="aspect-chip-row">
                 {CHARACTER_COUNTRIES.map((c) => (
                   <button
@@ -918,8 +918,8 @@ export function GenerationDialog() {
             <div className="gen-dialog__field">
               <div className="gen-dialog__label-row">
                 <label className="gen-dialog__label" htmlFor="gen-char-extras">
-                  Mô tả thêm (tuỳ chọn)
-                  <InfoTip tip="Prompt được auto-build: portrait headshot · vibe styling · photorealistic — tối ưu cho character reference." />
+                  More detail (optional)
+                  <InfoTip tip="Prompt is auto-built: portrait headshot · vibe styling · photorealistic — optimised for a character reference." />
                 </label>
                 <span className="gen-dialog__char-count">{charExtras.length}/200</span>
               </div>
@@ -931,7 +931,7 @@ export function GenerationDialog() {
                 maxLength={200}
                 value={charExtras}
                 onChange={(e) => setCharExtras(e.target.value)}
-                placeholder="Tuổi, kiểu tóc, trang phục, biểu cảm…"
+                placeholder="Age, hairstyle, outfit, expression…"
               />
             </div>
           </>
@@ -1008,15 +1008,15 @@ export function GenerationDialog() {
                 <p className="gen-dialog__hint">
                   {selectedSourceIdx.size === 0 ? (
                     <span style={{ color: "#ef4444" }}>
-                      Chọn ít nhất 1 variant để gen video.
+                      Pick at least 1 variant to generate a video.
                     </span>
                   ) : (
                     <>
-                      Sẽ gen <strong>{selectedSourceIdx.size} video</strong>
+                      Will generate <strong>{selectedSourceIdx.size} video</strong>
                       {selectedSourceIdx.size === sourceMediaIds.length
-                        ? " (tất cả variants)"
+                        ? " (all variants)"
                         : ` (${selectedSourceIdx.size}/${sourceMediaIds.length} variants)`}
-                      — cùng prompt + camera setting.
+                      — same prompt + camera setting.
                     </>
                   )}
                 </p>
@@ -1151,7 +1151,7 @@ export function GenerationDialog() {
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">
               Backend
-              <InfoTip tip="Flow = Chrome extension → Google Flow (cần Flow plan). Muse = muse2api gateway (hoặc Pax worker) tự render, không cần Flow plan hay extension — cần cấu hình muse2api hoặc có worker đang chạy (xem hướng dẫn ở AI Providers → Muse)." />
+              <InfoTip tip="Flow = Chrome extension → Google Flow (needs a Flow plan). Muse = the muse2api gateway (or a Pax worker) renders for you, with no Flow plan or extension — it needs muse2api configured or a worker running (see AI Providers → Muse)." />
             </span>
             <div className="aspect-chip-row">
               <button
@@ -1234,7 +1234,7 @@ export function GenerationDialog() {
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">
               Model
-              <InfoTip tip="Sticky — selection được lưu cho các lần dispatch sau (đồng bộ với Settings). Veo dùng i2v (1 source image); Omni Flash dùng reference ingredients (đa ảnh) với duration 4/6/8/10s chọn ở dưới." />
+              <InfoTip tip="Sticky — your selection is remembered for later runs (synced with Settings). Veo uses i2v (1 source image); Omni Flash uses reference ingredients (several images) with a 4/6/8/10s duration chosen below." />
             </span>
             <select
               className="gen-dialog__select"
@@ -1284,7 +1284,7 @@ export function GenerationDialog() {
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">
               Camera
-              <InfoTip tip="Static = locked-off, không zoom/pan — phù hợp e-commerce product shot. Dynamic = để auto-prompt tự quyết camera move (dolly / micro-shift / …)." />
+              <InfoTip tip="Static = locked-off, no zoom/pan — good for product shots. Dynamic = let auto-prompt choose the camera move (dolly / micro-shift / …)." />
             </span>
             <div className="aspect-chip-row">
               {CAMERA_MOVEMENTS.map((c) => (
@@ -1340,7 +1340,7 @@ export function GenerationDialog() {
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">
               Grid
-              <InfoTip tip="Storyboard renders as a SINGLE composite image — Flow draws the whole grid as one picture. The topic field above is your story (e.g. Rùa và Thỏ); the locked template wraps it for you. For 2×3 / 2×4 the rows × cols flip with the aspect ratio so panels stay readable on both landscape and portrait composites." />
+              <InfoTip tip="Storyboard renders as a SINGLE composite image — Flow draws the whole grid as one picture. The topic field above is your story (e.g. The Tortoise and the Hare); the locked template wraps it for you. For 2×3 / 2×4 the rows × cols flip with the aspect ratio so panels stay readable on both landscape and portrait composites." />
             </span>
             <div className="aspect-chip-row">
               {STORYBOARD_GRIDS.map((g) => {

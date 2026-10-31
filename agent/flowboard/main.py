@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from flowboard.config import EXTENSION_WS_PORT, WS_HOST
 from flowboard.db import get_session, init_db
 from flowboard.db.models import Node, Request
-from flowboard.routes import activity, auth, boards, chat, edges, flow_projects, llm, media, nodes, plans, projects, prompt, upload, vision
+from flowboard.routes import activity, auth, boards, chat, edges, flow_projects, llm, media, nodes, plans, projects, prompt, studio, upload, vision
 from flowboard.routes import provider_jobs as provider_jobs_route
 from flowboard.routes import references as references_route
 from flowboard.routes import requests as requests_route
@@ -136,6 +136,7 @@ app.include_router(upload.router)
 app.include_router(plans.router)
 app.include_router(vision.router)
 app.include_router(prompt.router)
+app.include_router(studio.router)
 app.include_router(auth.router)
 app.include_router(llm.router)
 app.include_router(activity.router)

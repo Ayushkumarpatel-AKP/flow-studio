@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Edge, Node } from "@xyflow/react";
+import { freeSlot } from "../canvas/layout";
 import {
   listBoards,
   createBoard,
@@ -67,7 +68,7 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // render a visible "busy" treatment that blocks duplicate dispatches.
   autoPromptStatus?: "pending" | "done" | "failed";
   // ISO timestamp persisted when a generation completes successfully.
-  // Powers the "5 phút trước" relative-time display in ResultViewer.
+  // Powers the "5 min ago" relative-time display in ResultViewer.
   // Uploads also stamp this so the timestamp reflects "when the asset
   // landed on the node" regardless of source.
   renderedAt?: string;
@@ -94,6 +95,9 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // missing (true for fresh nodes + legacy pre-1.2.15 nodes whose
   // multi-shot data is now ignored).
   storyboardGrid?: StoryboardGrid;
+  // Canvas tidy-up helpers: colour label and folded body, both persisted.
+  tag?: string;
+  collapsed?: boolean;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -219,7 +223,11 @@ interface BoardState {
   // Returns the new node's rfId on success, or null if creation failed.
   // Callers that need to wire up an edge immediately (e.g. drop-popover
   // shortcut) need the id back synchronously.
-  addNodeOfType(type: NodeType, position: { x: number; y: number }): Promise<string | null>;
+  addNodeOfType(
+    type: NodeType,
+    position: { x: number; y: number },
+    opts?: { exact?: boolean },
+  ): Promise<string | null>;
   // Spawn a brand-new visual_asset node from a saved Reference. Used by
   // both the panel click-to-spawn path and the canvas drop-to-spawn path.
   // The new node lands with status="done" + mediaId + aiBrief already
@@ -298,6 +306,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           slotErrors: n.data["slotErrors"] as (string | null)[] | undefined,
           variantCount: n.data["variantCount"] as number | undefined,
           aspectRatio: n.data["aspectRatio"] as string | undefined,
+          tag: n.data["tag"] as string | undefined,
+          collapsed: n.data["collapsed"] as boolean | undefined,
           aiBrief: n.data["aiBrief"] as string | undefined,
           imageModel: n.data["imageModel"] as string | undefined,
           videoQuality: n.data["videoQuality"] as string | undefined,
@@ -368,6 +378,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
           slotErrors: n.data["slotErrors"] as (string | null)[] | undefined,
           variantCount: n.data["variantCount"] as number | undefined,
           aspectRatio: n.data["aspectRatio"] as string | undefined,
+          tag: n.data["tag"] as string | undefined,
+          collapsed: n.data["collapsed"] as boolean | undefined,
           aiBrief: n.data["aiBrief"] as string | undefined,
           imageModel: n.data["imageModel"] as string | undefined,
           videoQuality: n.data["videoQuality"] as string | undefined,
@@ -504,10 +516,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  async addNodeOfType(type, position) {
-    const { boardId } = get();
+  async addNodeOfType(type, position, opts) {
+    const { boardId, nodes: existing } = get();
     if (boardId === null) return null;
     const title = TYPE_TITLE[type];
+    // New cards land on the nearest free spot, never on top of another card.
+    if (!opts?.exact) position = freeSlot(existing, position);
     try {
       const dto = await createNode({
         board_id: boardId,

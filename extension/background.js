@@ -30,6 +30,55 @@ const flowUrls = [
   'https://labs.google/fx/*/tools/flow*',
 ];
 
+// ─── Follow the open Flow project ───────────────────────────
+//
+// Generation has to target the project that is open in the signed-in Flow tab,
+// or Flow rejects it. Rather than make the user copy a link, the extension
+// reads the project id out of the tab's address and tells the agent. It runs
+// on every tab change and on every (re)connect, so an agent restart or a
+// project switch heals itself.
+
+const PIN_URL = 'http://127.0.0.1:8434/api/flow/projects/pinned';
+const FLOW_PROJECT_RE = /^https:\/\/flow\.google\.com\/(?:[^/]+\/)*project\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+let followedProject = null;   // last id the agent confirmed
+
+function projectIdFromUrl(url) {
+  const m = FLOW_PROJECT_RE.exec(url || '');
+  return m ? m[1].toLowerCase() : null;
+}
+
+async function followProjectFromTab(tab) {
+  const id = projectIdFromUrl(tab?.url);
+  if (!id || id === followedProject) return;
+  try {
+    const res = await fetch(PIN_URL, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ flow_project_id: id }),
+    });
+    if (!res.ok) return;
+    followedProject = id;
+    chrome.storage.local.set({ followedProject: id }).catch(() => {});
+    broadcastStatus();
+  } catch { /* agent offline — the next tab event or reconnect retries */ }
+}
+
+/** Pick the Flow project tab to follow: the focused one, else the newest. */
+async function followBestFlowTab() {
+  const tabs = (await chrome.tabs.query({ url: flowUrls })).filter((t) => projectIdFromUrl(t.url));
+  if (!tabs.length) return;
+  const pick = tabs.find((t) => t.active && t.highlighted) || tabs.find((t) => t.active)
+    || tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+  await followProjectFromTab(pick);
+}
+
+chrome.tabs.onUpdated.addListener((_id, change, tab) => {
+  if (change.url || change.status === 'complete') followProjectFromTab(tab);
+});
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try { followProjectFromTab(await chrome.tabs.get(tabId)); } catch { /* tab closed */ }
+});
+
 // ─── URL → Log Type Classifier ─────────────────────────────
 
 function classifyUrl(url) {
@@ -173,6 +222,8 @@ function connectToAgent() {
     console.log('[Flowboard] Connected to agent');
     chrome.alarms.clear('reconnect');
     setState('idle');
+    followedProject = null;      // agent may have restarted and lost its pin
+    followBestFlowTab();
 
     const tokenAge = flowKey && metrics.tokenCapturedAt
       ? Date.now() - metrics.tokenCapturedAt
@@ -318,7 +369,18 @@ function sendToAgent(msg) {
 const CAPTCHA_SLOT = '__CAPTCHA__';
 const MAX_RPC_TEXT = 32000000; // the project listing alone is past 17 MB
 
-async function runBatchRpc(cmd) {
+async function runBatchRpc(cmd, _retried = false) {
+  const res = await runBatchRpcOnce(cmd);
+  if (res?.error === 'NO_INJECTION_RESULT' && !_retried) {
+    // The page returned nothing (tab was waking / navigating), so no request
+    // went out. A generate gets a brand-new captcha on the retry.
+    await sleep(1500);
+    return runBatchRpc(cmd, true);
+  }
+  return res;
+}
+
+async function runBatchRpcOnce(cmd) {
   const tabs = await chrome.tabs.query({ url: flowUrls });
   let candidate = tabs.find((t) => !t.discarded) || tabs[0];
   if (!candidate) {
@@ -680,7 +742,29 @@ function captchaFromTab(tabId, requestId, captchaAction) {
   ]);
 }
 
+/** reCAPTCHA times out in a backgrounded tab. Bring the Flow tab forward (and
+ *  its window) so the page is treated as visible. Best-effort: never throws. */
+async function focusFlowTab(tab) {
+  try {
+    if (!tab?.id) return;
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+  } catch { /* tab/window vanished — the caller's retry path handles it */ }
+}
+
+/** solveCaptcha with one automatic retry after focusing the tab. */
 async function solveCaptcha(requestId, captchaAction) {
+  const res = await solveCaptchaOnce(requestId, captchaAction);
+  if (res?.token) return res;
+  const tabs = await chrome.tabs.query({ url: flowUrls });
+  if (!tabs.length) return res;
+  await focusFlowTab(tabs.find((t) => !t.discarded) || tabs[0]);
+  await sleep(800);
+  const retry = await solveCaptchaOnce(requestId, captchaAction);
+  return retry?.token ? retry : (res?.error ? res : retry);
+}
+
+async function solveCaptchaOnce(requestId, captchaAction) {
   const tabs = await chrome.tabs.query({ url: flowUrls });
 
   // No Flow tab at all — spawn one (handles "no Chrome window" via the
@@ -816,6 +900,7 @@ chrome.runtime.onMessage.addListener((msg, _, reply) => {
       connected:       ws?.readyState === WebSocket.OPEN,
       flowKeyPresent:  !!flowKey,
       manualDisconnect,
+      project:         followedProject,
       tokenAge:        metrics.tokenCapturedAt ? Date.now() - metrics.tokenCapturedAt : null,
       metrics: {
         requestCount: metrics.requestCount,

@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Flowboard Bridge",
-  "version": "0.1.1",
+  "name": "Flowboard Bridge — by Ayush",
+  "version": "0.1.3",
+  "author": "Ayush",
   "description": "Local bridge for Google Flow — runs batchexecute RPCs inside a signed-in flow.google.com tab and mints reCAPTCHA for Flowboard.",
   "permissions": [
     "storage",
@@ -23,7 +24,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Flowboard Bridge",
+    "default_title": "Flowboard Bridge — by Ayush",
     "default_popup": "popup.html"
   },
   "content_scripts": [

@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Board } from "./canvas/Board";
 import { AddNodePalette } from "./canvas/AddNodePalette";
+import { CanvasExtras } from "./canvas/CanvasExtras";
+import "./canvas/canvas-extras.css";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/Toolbar";
 // import { ChatSidebar } from "./components/ChatSidebar";
@@ -43,6 +45,7 @@ export function App() {
             <>
               <Board />
               <AddNodePalette />
+              <CanvasExtras />
             </>
           )}
           <StatusBar />

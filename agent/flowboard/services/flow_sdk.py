@@ -283,6 +283,21 @@ IMAGE_UI_SUBMIT_OFFSETS_S = (0.0, 0.5, 1.5, 2.5)
 
 _VALID_TIERS = {"PAYGATE_TIER_ONE", "PAYGATE_TIER_TWO"}
 
+# Set when Flow tells us the configured plan is higher than the real one
+# (PUBLIC_ERROR_MODEL_ACCESS_DENIED on an Ultra checkpoint). Lasts for the
+# process so a Pro account stops paying a failed round-trip on every video.
+_learned_tier: Optional[str] = None
+
+
+def learn_paygate_tier(tier: str) -> None:
+    global _learned_tier
+    if tier in _VALID_TIERS:
+        _learned_tier = tier
+
+
+def is_model_access_denied(message: object) -> bool:
+    return isinstance(message, str) and "MODEL_ACCESS_DENIED" in message
+
 
 def resolve_paygate_tier(requested: Optional[str] = None) -> str:
     """Settle on the account's Flow plan, or raise saying why we cannot.
@@ -303,7 +318,7 @@ def resolve_paygate_tier(requested: Optional[str] = None) -> str:
     So the plan is declared once, in config, and an unrecognised value fails
     loudly here instead of quietly changing which model renders.
     """
-    tier = requested or DEFAULT_PAYGATE_TIER
+    tier = requested or _learned_tier or DEFAULT_PAYGATE_TIER
     if tier not in _VALID_TIERS:
         raise ValueError(
             f"paygate_tier_invalid: {tier!r} is not one of {sorted(_VALID_TIERS)} "

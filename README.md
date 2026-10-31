@@ -1,6 +1,9 @@
-<p align="center">
-  <img src="docs/assets/logo-wordmark.svg" alt="Flowboard" width="480" />
-</p>
+<h1 align="center">FLOWBOARD STUDIO</h1>
+<p align="center"><b>Idea → comic video, powered by Google Flow.</b><br/>Made by <b>Ayush</b></p>
+
+> **Quick start (Windows):** run `powershell -ExecutionPolicy Bypass -File start.ps1`, load the
+> `extension` folder in Chrome (`chrome://extensions` → Developer mode → Load unpacked), sign in at
+> [flow.google.com](https://flow.google.com), then open **Studio** at http://localhost:5173/?studio=1.
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"/></a>
@@ -1058,6 +1061,9 @@ MIT (proposed — license file pending).
 
 ## Credits
 
+**Flowboard Studio — made by Ayush.** It is built on the open-source Flowboard
+project (MIT-licensed); that licence and its copyright notice stay with the code.
+
 Generated media in this README was produced through the pipeline using
 [Google Flow](https://labs.google/flow). Auto-prompt + vision synthesis
 defaults to [Claude](https://claude.ai) via the local CLI; multi-LLM
@@ -1066,21 +1072,3 @@ OpenAI's [Codex CLI](https://github.com/openai/codex) as alternative
 providers — pick one per feature in `Settings → AI Providers`.
 
 ---
-
-## Community & Support
-
-<p align="center">
-  <a href="https://www.facebook.com/groups/vibecodeera">
-    <img src="https://img.shields.io/badge/Join%20the%20Community-Vibe%20Code%20Era%20on%20Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Join the Vibe Code Era Facebook Group" />
-  </a>
-</p>
-
-**Share anything crazy and useful created with Vibe Code.** Drop in to:
-
-- Post the shots and clips you've generated
-- Share node-graph patterns, vibe presets, and prompt recipes that work for you
-- Ask for help when an output isn't matching what you imagined
-- Request features and report bugs you've hit in the wild
-- Trade tips on Google Flow plan limits, Veo i2v behaviour, and LLM CLI setup (Claude / Gemini / Codex)
-
-→ **[facebook.com/groups/vibecodeera](https://www.facebook.com/groups/vibecodeera)**

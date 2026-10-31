@@ -1,3 +1,4 @@
+import { useCanvasTools } from "../store/canvasTools";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Background,
@@ -105,6 +106,8 @@ function DropAddPopover({
 }
 
 export function Board() {
+  const openMenu = useCanvasTools((s) => s.openMenu);
+  const closeMenu = useCanvasTools((s) => s.closeMenu);
   const nodes = useBoardStore((s) => s.nodes);
   const edges = useBoardStore((s) => s.edges);
   const setNodes = useBoardStore((s) => s.setNodes);
@@ -360,6 +363,9 @@ export function Board() {
         onEdgesDelete={onEdgesDelete}
         onNodeDoubleClick={onNodeDoubleClick}
         deleteKeyCode={["Backspace", "Delete"]}
+        onNodeContextMenu={(e, node) => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY, nodeId: node.id }); }}
+        onPaneContextMenu={(e) => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY, nodeId: null }); }}
+        onPaneClick={closeMenu}
         defaultEdgeOptions={defaultEdgeOptions}
         // Larger connection-drop radius so users don't have to land
         // pixel-perfect on the handle to complete an edge.

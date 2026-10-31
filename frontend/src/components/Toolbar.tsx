@@ -2,7 +2,6 @@ import { useState, useRef, type KeyboardEvent } from "react";
 import { useBoardStore } from "../store/board";
 import { ActivityBell } from "./activity/ActivityBell";
 import { AiProviderBadge } from "./AiProviderBadge";
-import { SponsorButton } from "./SponsorDialog";
 
 export function Toolbar() {
   const boardName = useBoardStore((s) => s.boardName);
@@ -61,7 +60,7 @@ export function Toolbar() {
       <div className="toolbar-actions">
         <ActivityBell />
         <AiProviderBadge />
-        <SponsorButton />
+        <span className="made-by" title="Made by Ayush">Made by Ayush</span>
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useBoardStore, type FlowboardNodeData, type FlowNode } from "../store/board";
 import { useGenerationStore } from "../store/generation";
+import { useCanvasTools } from "../store/canvasTools";
 import { mediaUrl, patchEdge, patchNode, uploadImage, uploadImageFromUrl } from "../api/client";
 import { requestAutoBrief } from "../api/autoBrief";
 import { useReferencesStore } from "../store/references";
@@ -9,6 +10,8 @@ import {
   normaliseStoryboardGrid,
   resolveStoryboardLayout,
 } from "../lib/storyboardPrompt";
+
+const TAGS = [undefined, "yellow", "pink", "blue", "green"] as const;
 
 const ICON: Record<string, string> = {
   character: "◎",
@@ -1486,6 +1489,27 @@ export function NodeCard(props: NodeProps<FlowNode>) {
   const llmBusy = isLLMBusy(data);
   const downloadable = !!data.mediaId && data.type !== "prompt" && data.type !== "note";
 
+  const tools = useCanvasTools.getState;
+  const cloneNode = useBoardStore.getState;
+
+  function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    void tools().deleteWithUndo(props.id);
+  }
+  function handleDuplicate(e: React.MouseEvent) {
+    e.stopPropagation();
+    void cloneNode().cloneNodeWithUpstream(props.id);
+  }
+  function handleTag(e: React.MouseEvent) {
+    e.stopPropagation();
+    const i = TAGS.indexOf(data.tag as (typeof TAGS)[number]);
+    tools().setTag(props.id, TAGS[(i + 1) % TAGS.length]);
+  }
+  function handleCollapse(e: React.MouseEvent) {
+    e.stopPropagation();
+    tools().toggleCollapsed(props.id);
+  }
+
   function handleGenerate(e: React.MouseEvent) {
     e.stopPropagation();
     if (llmBusy) return; // guard: backend still composing for this node
@@ -1524,7 +1548,9 @@ export function NodeCard(props: NodeProps<FlowNode>) {
 
   return (
     <div
-      className={`node-card${isNote ? " node-card--note" : ""}${
+      data-tag={data.tag}
+      data-type={data.type}
+      className={`node-card${isNote ? " node-card--note" : ""}${data.collapsed ? " node-card--collapsed" : ""}${
         props.selected ? " node-card--selected" : ""
       }${llmBusy ? " node-card--llm-busy" : ""}`}
     >
@@ -1543,6 +1569,12 @@ export function NodeCard(props: NodeProps<FlowNode>) {
           </span>
         )}
         <div className="node-header__actions">
+          <span className="node-tools" role="toolbar" aria-label="Node tools">
+            <button className="node-header__btn node-tool" onClick={handleTag} title="Colour label" aria-label="Colour label">●</button>
+            <button className="node-header__btn node-tool" onClick={handleCollapse} title={data.collapsed ? "Expand" : "Fold"} aria-label="Fold node">{data.collapsed ? "▸" : "▾"}</button>
+            <button className="node-header__btn node-tool" onClick={handleDuplicate} title="Duplicate (with same inputs)" aria-label="Duplicate node">⧉</button>
+            <button className="node-header__btn node-tool node-tool--danger" onClick={handleDelete} title="Delete node" aria-label="Delete node">✕</button>
+          </span>
           {downloadable && (
             <button
               className="node-header__btn"
@@ -1570,7 +1602,11 @@ export function NodeCard(props: NodeProps<FlowNode>) {
         <span className="node-short-id">#{data.shortId}</span>
       </div>
 
-      <NodeBody rfId={props.id} data={data} />
+      {data.collapsed ? (
+        <div className="node-folded" onDoubleClick={handleCollapse}>folded · double-click to open</div>
+      ) : (
+        <NodeBody rfId={props.id} data={data} />
+      )}
 
       <Handle type="source" position={Position.Right} className="node-handle" />
     </div>

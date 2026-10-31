@@ -27,11 +27,11 @@ const COLLAPSED_HEIGHT = 48;
 
 const STEP_LABEL: Record<string, string> = {
   chat_agent: "Agent",
-  gen_image: "Tạo ảnh",
-  gen_video: "Tạo video",
-  edit_image: "Sửa ảnh",
+  gen_image: "Create image",
+  gen_video: "Create video",
+  edit_image: "Edit image",
   upload: "Upload",
-  planner: "Lập kế hoạch",
+  planner: "Plan",
 };
 
 function extractMentions(text: string): string[] {
@@ -68,7 +68,7 @@ function MessageRow({ msg }: { msg: ChatMessageDTO }) {
               key={a.id}
               className="chat-dock__msg-thumb"
               src={a.url}
-              alt="đính kèm"
+              alt="attachment"
               loading="lazy"
             />
           ))}
@@ -179,15 +179,15 @@ export function ChatDock() {
       const accepted: PickedFile[] = [];
       for (const f of Array.from(list)) {
         if (files.length + accepted.length >= MAX_FILES) {
-          notifyError(`Tối đa ${MAX_FILES} ảnh mỗi tin nhắn.`);
+          notifyError(`Up to ${MAX_FILES} images per message.`);
           break;
         }
         if (!f.type.startsWith("image/")) {
-          notifyError(`"${f.name}" không phải ảnh — chỉ nhận image/*.`);
+          notifyError(`"${f.name}" is not an image — only image/* files are accepted.`);
           continue;
         }
         if (f.size > MAX_FILE_BYTES) {
-          notifyError(`"${f.name}" quá 10 MB.`);
+          notifyError(`"${f.name}" is over 10 MB.`);
           continue;
         }
         accepted.push({ file: f, preview: URL.createObjectURL(f) });
@@ -237,7 +237,7 @@ export function ChatDock() {
     }
 
     const content =
-      text.trim() || "Hãy dùng các ảnh đính kèm để thực hiện yêu cầu của tôi.";
+      text.trim() || "Please use the attached images to do what I asked.";
     setText("");
     await sendMessage(content, mentions, attachmentIds, previews);
   }, [canSend, boardId, nodes, text, files, sendMessage, notifyError]);
@@ -289,8 +289,8 @@ export function ChatDock() {
           className="chat-dock__bar"
           onClick={() => setCollapsed(false)}
         >
-          <span className="chat-dock__bar-label">Chat — hỏi AI làm video…</span>
-          {activeRun && <span className="chat-dock__bar-running">đang chạy…</span>}
+          <span className="chat-dock__bar-label">Chat — ask the AI to make a video…</span>
+          {activeRun && <span className="chat-dock__bar-running">running…</span>}
           <span className="chat-dock__bar-chevron" aria-hidden="true">▲</span>
         </button>
       </div>
@@ -304,7 +304,7 @@ export function ChatDock() {
         onMouseDown={onResizeStart}
         role="separator"
         aria-orientation="horizontal"
-        aria-label="Kéo để đổi chiều cao"
+        aria-label="Drag to resize"
       />
       <div className="chat-dock__header">
         <span className="chat-dock__title">Chat AI</span>
@@ -314,8 +314,8 @@ export function ChatDock() {
           }`}
           title={
             museAvailable
-              ? "Muse sẵn sàng (muse2api hoặc worker)"
-              : "Muse chưa sẵn sàng"
+              ? "Muse is ready (muse2api or worker)"
+              : "Muse is not ready"
           }
         >
           {museAvailable === null ? "○" : museAvailable ? "●" : "○"} Muse
@@ -324,7 +324,7 @@ export function ChatDock() {
           type="button"
           className="chat-dock__collapse-btn"
           onClick={() => setCollapsed(true)}
-          aria-label="Thu gọn chat"
+          aria-label="Collapse chat"
         >
           ▼
         </button>
@@ -332,9 +332,9 @@ export function ChatDock() {
 
       {museAvailable === false && (
         <div className="chat-dock__notice">
-          Muse chưa sẵn sàng — đặt <code>FLOWBOARD_MUSE2API_BASE</code> trỏ
-          tới muse2api, hoặc chạy{" "}
-          <code>python agent/scripts/muse_worker.py</code>, rồi gửi lại.
+          Muse is not ready — set <code>FLOWBOARD_MUSE2API_BASE</code> to point
+          at muse2api, or run{" "}
+          <code>python agent/scripts/muse_worker.py</code>, then send again.
         </div>
       )}
 
@@ -345,11 +345,11 @@ export function ChatDock() {
         {activeRun && (
           <div className="chat-dock__step">
             <span className="chat-dock__step-dots" aria-hidden="true">●●●</span>
-            <span>{stepText ?? "Agent đang thực hiện…"}</span>
+            <span>{stepText ?? "The agent is working…"}</span>
           </div>
         )}
         {runError && (
-          <div className="chat-dock__error">Lỗi: {runError}</div>
+          <div className="chat-dock__error">Error: {runError}</div>
         )}
       </div>
 
@@ -363,7 +363,7 @@ export function ChatDock() {
                   type="button"
                   className="chat-dock__thumb-remove"
                   onClick={() => removeFile(f.preview)}
-                  aria-label={`Gỡ ${f.file.name}`}
+                  aria-label={`Remove ${f.file.name}`}
                 >
                   ×
                 </button>
@@ -391,8 +391,8 @@ export function ChatDock() {
             className="chat-dock__attach-btn"
             onClick={() => fileInputRef.current?.click()}
             disabled={pending || uploading || activeRun !== null}
-            title="Đính kèm ảnh (tối đa 5)"
-            aria-label="Đính kèm ảnh"
+            title="Attach images (up to 5)"
+            aria-label="Attach images"
           >
             📎
           </button>
@@ -404,8 +404,8 @@ export function ChatDock() {
             onKeyDown={handleKeyDown}
             placeholder={
               activeRun
-                ? "Agent đang chạy…"
-                : "Mô tả ý tưởng + yêu cầu làm video… (Enter để gửi)"
+                ? "The agent is running…"
+                : "Describe your idea and ask for a video… (Enter to send)"
             }
             disabled={pending || uploading || activeRun !== null}
             rows={2}
@@ -415,7 +415,7 @@ export function ChatDock() {
             className="chat-dock__send"
             onClick={() => void handleSend()}
             disabled={!canSend}
-            aria-label="Gửi"
+            aria-label="Send"
           >
             {uploading ? "…" : "➤"}
           </button>

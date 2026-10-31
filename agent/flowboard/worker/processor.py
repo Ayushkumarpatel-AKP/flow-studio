@@ -21,7 +21,12 @@ from flowboard.request_types import MEDIA_PRODUCING_TYPES
 from flowboard import config
 from flowboard.services import media as media_service
 from flowboard.services.flow_client import flow_client
-from flowboard.services.flow_sdk import get_flow_sdk, resolve_paygate_tier
+from flowboard.services.flow_sdk import (
+    get_flow_sdk,
+    is_model_access_denied,
+    learn_paygate_tier,
+    resolve_paygate_tier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +321,27 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         paygate_tier=tier,
         video_quality=video_quality,
     )
+    if (
+        is_model_access_denied(dispatch.get("error"))
+        and tier == "PAYGATE_TIER_TWO"
+        and not params.get("paygate_tier")
+    ):
+        # The configured plan (Ultra) is higher than the account's real one.
+        # Retry once as Pro on the Lite checkpoint and remember it.
+        tier = "PAYGATE_TIER_ONE"
+        dispatch = await sdk.gen_video(
+            prompt=prompt.strip(),
+            project_id=project_id,
+            start_media_id=start_media_id.strip()
+            if isinstance(start_media_id, str) and start_media_id.strip()
+            else None,
+            start_media_ids=start_media_ids,
+            aspect_ratio=aspect,
+            paygate_tier=tier,
+            video_quality="lite",
+        )
+        if not dispatch.get("error"):
+            learn_paygate_tier(tier)
     if dispatch.get("error"):
         return dispatch, str(dispatch["error"])[:200]
 
