@@ -8,7 +8,7 @@
 <p align="center"><i>Made by <b>Ayush</b></i></p>
 
 <p align="center">
-  <img src="docs/screenshots/studio-home.png" alt="Flow Studio home with story templates" width="860"/>
+  <img src="docs/screenshots/studio-home.png" alt="Flow Studio: settings on the left, prompt and templates in the middle" width="860"/>
 </p>
 
 ---
@@ -22,18 +22,24 @@
 
 Everything above is produced by the app itself: the pictures come from Google Flow, and the bubbles, captions, voices and video are put together by Flow Studio.
 
-![The ten panels of a generated story](docs/screenshots/panels.jpg)
+![Template covers, all drawn with Flow Studio's own prompts](docs/screenshots/templates.jpg)
+
+*Every template and art style in Studio shows a real sample picture, so you can tell stickman, comic, anime and watercolor apart at a glance.*
 
 ## Features
 
 ### 🎬 Studio — idea to video in four steps
-- **Templates** for instant starts (zombie eclipse, pizza heist, space camping, hero origin, and more).
+- **One-screen studio layout, with no page scrolling:** settings on the left (art style, mood, shape, voice, subtitles), your work in the middle, properties on the right, and one bottom bar for drawing and exporting. On a small screen it becomes a normal scrolling page with the prompt first.
+- **Type or pick:** a prompt box at the top of the home screen, with ✨ Improve and 🎲 Surprise me, and compact template cards below it. **＋ New story** takes you back from the editor.
+- **Templates by category** (Comedy, Action, Sci-Fi & Fantasy, Spooky & Mystery, Wholesome) with real cover pictures, for instant starts.
+- **Full-frame pictures:** no blank boxes. The script only asks for calm space at the top of a panel when its dialogue is long, and you can switch that per panel.
+- **Picture backup:** if Google Flow's daily limit is reached, the other Flow models are tried, then your own OpenRouter or OpenAI key (uses your credits).
 - **AI helpers:** write a whole script from one line, ✨ improve your idea, 🎲 get surprise ideas, and ✨ punch up any scene or line of dialogue.
 - **Visual editor:** a filmstrip, a live preview, and speech bubbles you drag, resize and aim. Undo/redo with <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>.
 - **Video shapes:** 16:9, 9:16 and 1:1.
 - **Voiceover:** free Edge voices (including Hindi) and Windows voices out of the box. Paste an ElevenLabs or OpenAI key and its voices appear automatically.
 - **Karaoke subtitles:** the word being spoken lights up. Timing is estimated for free, or exact with a Groq/OpenAI Whisper key.
-- **MP4 export** with bubbles, captions, sound effects, slow zoom and fades.
+- **MP4 export** with bubbles, captions, sound effects, slow zoom and fades. The finished video opens in a popup with a download button.
 
 ![Voice and captions panel](docs/screenshots/studio-voice.png)
 
@@ -42,7 +48,7 @@ Character, Image, Video, Prompt, Storyboard and Note nodes you connect into a pi
 - Delete, duplicate, fold and colour-label nodes, with **Undo** after deleting.
 - **Arrange**, **Fit**, **Clean** (remove empty nodes) and one-click **Recipes** (Hero shot, Prompt to picture, Storyboard film, Duo scene).
 - Right-click menu, and new nodes never land on top of each other.
-- A chat dock where you describe what you want and an AI agent builds the board for you.
+- A chat dock where you describe what you want and an AI agent builds the board for you. It sees what every node holds, uses the nodes you have **selected** (or whose `#id` you click), reuses your pictures instead of guessing, and stops after one result per request so it can never loop and burn credits.
 
 ![Canvas with connected nodes](docs/screenshots/canvas.png)
 
