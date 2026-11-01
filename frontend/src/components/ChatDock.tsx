@@ -1,0 +1,491 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { useBoardStore } from "../store/board";
+import { useChatStore } from "../store/chat";
+import {
+  api,
+  getActivityList,
+  getLlmProviders,
+  uploadChatAttachments,
+  type ChatMessageDTO,
+} from "../api/client";
+
+// ── Limits (mirror backend caps in routes/chat.py) ────────────────────────────
+const MAX_FILES = 5;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+// Scripts are read as text, so they are accepted by file extension (browsers give them odd types).
+const SCRIPT_EXT = /\.(txt|md|markdown|srt|vtt|json|csv|fountain|rtf|docx)$/i;
+const isScript = (f: File) => SCRIPT_EXT.test(f.name);
+
+// ── Dock sizing ──────────────────────────────────────────────────────────────
+const DEFAULT_HEIGHT = 320;
+const MIN_HEIGHT = 160;
+const COLLAPSED_HEIGHT = 48;
+
+const STEP_LABEL: Record<string, string> = {
+  chat_agent: "Agent",
+  gen_image: "Create image",
+  gen_video: "Create video",
+  edit_image: "Edit image",
+  upload: "Upload",
+  planner: "Plan",
+};
+
+function extractMentions(text: string): string[] {
+  const matches = text.matchAll(/#(\w+)/g);
+  return [...matches].map((m) => m[1]);
+}
+
+interface PickedFile {
+  file: File;
+  preview: string;
+  script?: boolean;
+}
+
+function MessageRow({ msg }: { msg: ChatMessageDTO }) {
+  if (msg.role === "system") {
+    return (
+      <div className="chat-system-divider">
+        <span>{msg.content}</span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className={`chat-bubble ${
+        msg.role === "user" ? "chat-bubble--user" : "chat-bubble--assistant"
+      }`}
+    >
+      {msg.role === "assistant" && (
+        <div className="chat-agent-label">agent</div>
+      )}
+      {msg.attachments.length > 0 && (
+        <div className="chat-dock__msg-attachments">
+          {msg.attachments.map((a) =>
+            a.mime === "text/plain" ? (
+              <span key={a.id} className="chat-dock__msg-script" title={a.name}>
+                📄 {a.name || "script"}
+              </span>
+            ) : (
+              <img
+                key={a.id}
+                className="chat-dock__msg-thumb"
+                src={a.url}
+                alt="attachment"
+                loading="lazy"
+              />
+            ),
+          )}
+        </div>
+      )}
+      <div className="chat-bubble__text">{msg.content}</div>
+    </div>
+  );
+}
+
+export function ChatDock() {
+  const boardId = useBoardStore((s) => s.boardId);
+  const nodes = useBoardStore((s) => s.nodes);
+  const messages = useChatStore((s) => s.messages);
+  const pending = useChatStore((s) => s.pending);
+  const activeRun = useChatStore((s) => s.activeRun);
+  const runError = useChatStore((s) => s.runError);
+  const loadChat = useChatStore((s) => s.loadChat);
+  const sendMessage = useChatStore((s) => s.sendMessage);
+  const notifyError = useChatStore((s) => s.notifyError);
+
+  const [collapsed, setCollapsed] = useState(false);
+  const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<PickedFile[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [museAvailable, setMuseAvailable] = useState<boolean | null>(null);
+  // Nodes the user has selected on the canvas are what "this" means in a message.
+  const [ignoreSelected, setIgnoreSelected] = useState<string[]>([]);
+  // The chat thinks with whichever engine the user connected in Engines (Groq, Gemini…).
+  const [engine, setEngine] = useState<{ state: string; label: string | null } | null>(null);
+  const [stepText, setStepText] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const resizingRef = useRef(false);
+
+  // Clicking a node's #id on the canvas drops it into the message box.
+  useEffect(() => {
+    const onMention = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id) return;
+      setCollapsed(false);
+      setText((t) => (t.includes(`#${id}`) ? t : `${t}${t && !t.endsWith(" ") ? " " : ""}#${id} `));
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    };
+    window.addEventListener("flowboard:mention", onMention);
+    return () => window.removeEventListener("flowboard:mention", onMention);
+  }, []);
+
+  // Load this board's channel on switch.
+  useEffect(() => {
+    if (boardId !== null) void loadChat(boardId);
+  }, [boardId, loadChat]);
+
+  // Muse worker presence — same endpoint/logic family as AiProviderBadge.
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const providers = await getLlmProviders();
+        if (!alive) return;
+        const muse = providers.find((p) => p.name === "muse");
+        setMuseAvailable(muse ? muse.available : false);
+        const ov = await api<{ config: Record<string, { status: { state: string; engine: string | null } }>; providers: { id: string; label: string }[] }>("/api/engines");
+        const st = ov.config.chat?.status;
+        setEngine({ state: st?.state ?? "none", label: ov.providers.find((p) => p.id === st?.engine)?.label ?? null });
+      } catch {
+        // Network blip — keep stale state, retry next tick.
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Agent-step line: latest activity while a run is active.
+  useEffect(() => {
+    if (!activeRun) {
+      setStepText(null);
+      return;
+    }
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const { items } = await getActivityList({ limit: 5 });
+        if (!alive || items.length === 0) return;
+        const latest = items[0];
+        const label = STEP_LABEL[latest.type] ?? latest.type;
+        const node = latest.node_short_id ? ` · #${latest.node_short_id}` : "";
+        setStepText(`${label}${node} — ${latest.status}`);
+      } catch {
+        // Keep the previous step text on blips.
+      }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [activeRun]);
+
+  // Autoscroll to the newest message.
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, stepText, runError]);
+
+  // Revoke preview object URLs on unmount.
+  useEffect(() => {
+    const current = files;
+    return () => {
+      for (const f of current) if (!f.script) URL.revokeObjectURL(f.preview);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addFiles = useCallback(
+    (list: FileList | null) => {
+      if (!list || list.length === 0) return;
+      const accepted: PickedFile[] = [];
+      for (const f of Array.from(list)) {
+        if (files.length + accepted.length >= MAX_FILES) {
+          notifyError(`Up to ${MAX_FILES} files per message.`);
+          break;
+        }
+        const script = isScript(f);
+        if (!script && !f.type.startsWith("image/")) {
+          notifyError(`"${f.name}" is not a picture or a script (txt, md, srt, json, csv, docx).`);
+          continue;
+        }
+        if (f.size > MAX_FILE_BYTES) {
+          notifyError(`"${f.name}" is over 10 MB.`);
+          continue;
+        }
+        accepted.push({ file: f, preview: script ? `script:${f.name}:${f.size}:${accepted.length}:${files.length}` : URL.createObjectURL(f), script });
+      }
+      if (accepted.length > 0) setFiles((prev) => [...prev, ...accepted]);
+    },
+    [files, notifyError],
+  );
+
+  const removeFile = useCallback((preview: string) => {
+    setFiles((prev) => {
+      const next = prev.filter((f) => f.preview !== preview);
+      const removed = prev.find((f) => f.preview === preview);
+      if (removed) URL.revokeObjectURL(removed.preview);
+      return next;
+    });
+  }, []);
+
+  const selectedNodes = nodes
+    .filter((n) => n.selected && !ignoreSelected.includes(n.data.shortId))
+    .map((n) => ({ id: n.data.shortId, title: n.data.title as string }));
+  // a fresh selection brings back chips the user had dismissed for other nodes
+  const dismiss = (id: string) => setIgnoreSelected((x) => [...x, id]);
+
+  const engineReady = engine?.state === "ok" || engine?.state === "limited";
+  const chatReady = engineReady || museAvailable === true;
+  const checking = engine === null && museAvailable === null;
+  const brain = engineReady ? engine?.label ?? "AI" : museAvailable ? "Muse" : "No AI yet";
+
+  const canSend =
+    !pending &&
+    !uploading &&
+    activeRun === null &&
+    chatReady &&
+    (text.trim().length > 0 || files.length > 0);
+
+  const handleSend = useCallback(async () => {
+    if (!canSend || boardId === null) return;
+    const known = new Set(nodes.map((n) => n.data.shortId));
+    const typed = extractMentions(text).filter((m) => known.has(m));
+    const picked = selectedNodes.filter((n) => !typed.includes(n.id)).map((n) => n.id);
+    const mentions = [...typed, ...picked];
+
+    let attachmentIds: number[] = [];
+    let previews: Array<{ mime: string; url: string }> = [];
+    if (files.length > 0) {
+      setUploading(true);
+      try {
+        const result = await uploadChatAttachments(boardId, files.map((f) => f.file));
+        attachmentIds = result.assets.map((a) => a.id);
+        previews = result.assets.map((a) => ({ mime: a.mime, url: a.url, name: a.name }));
+      } catch (err) {
+        notifyError(err instanceof Error ? err.message : String(err));
+        setUploading(false);
+        return;
+      }
+      setUploading(false);
+      for (const f of files) if (!f.script) URL.revokeObjectURL(f.preview);
+      setFiles([]);
+    }
+
+    let content =
+      text.trim() ||
+      (files.some((f) => f.script)
+        ? "Please read the attached script and build it: one picture per scene."
+        : "Please use the attached images to do what I asked.");
+    // Say it in the message too, so the history shows what the AI was told and the AI cannot miss it.
+    if (picked.length) {
+      content += `\n[Selected on the canvas: ${picked.map((id) => "#" + id).join(", ")}]`;
+    }
+    setText("");
+    await sendMessage(content, mentions, attachmentIds, previews);
+  }, [canSend, boardId, nodes, selectedNodes, text, files, sendMessage, notifyError]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void handleSend();
+      }
+    },
+    [handleSend],
+  );
+
+  // Drag-resize from the top edge handle.
+  const onResizeStart = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    const startY = e.clientY;
+    const startH = height;
+    const maxH = Math.floor(window.innerHeight * 0.7);
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const next = Math.min(
+        Math.max(startH + (startY - ev.clientY), MIN_HEIGHT),
+        maxH,
+      );
+      setHeight(next);
+    };
+    const onUp = () => {
+      resizingRef.current = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [height]);
+
+  if (boardId === null) return null;
+
+  if (collapsed) {
+    return (
+      <div
+        className="chat-dock chat-dock--collapsed"
+        style={{ height: COLLAPSED_HEIGHT }}
+      >
+        <button
+          type="button"
+          className="chat-dock__bar"
+          onClick={() => setCollapsed(false)}
+        >
+          <span className="chat-dock__bar-label">Chat — ask the AI to make a video…</span>
+          {activeRun && <span className="chat-dock__bar-running">running…</span>}
+          <span className="chat-dock__bar-chevron" aria-hidden="true">▲</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat-dock" style={{ height }}>
+      <div
+        className="chat-dock__resize-handle"
+        onMouseDown={onResizeStart}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Drag to resize"
+      />
+      <div className="chat-dock__header">
+        <span className="chat-dock__title">Chat AI</span>
+        <span
+          className={`chat-dock__presence chat-dock__presence--${checking ? "loading" : chatReady ? "ok" : "bad"}`}
+          title={chatReady ? `The chat thinks with ${brain}` : "No AI engine is connected yet"}
+        >
+          {checking ? "○" : chatReady ? "●" : "○"} {brain}
+        </span>
+        <button
+          type="button"
+          className="chat-dock__collapse-btn"
+          onClick={() => setCollapsed(true)}
+          aria-label="Collapse chat"
+        >
+          ▼
+        </button>
+      </div>
+
+      {!checking && !chatReady && (
+        <div className="chat-dock__notice">
+          The chat needs an AI engine to think with. Add a free Groq key (no card needed) and it will plan your board and
+          build it for you.{" "}
+          <button type="button" className="chat-dock__notice-btn" onClick={() => window.dispatchEvent(new Event("flowboard:open-engines"))}>
+            🔌 Add a key
+          </button>
+        </div>
+      )}
+
+      <div className="chat-dock__messages" ref={messagesRef}>
+        {messages.map((msg) => (
+          <MessageRow key={msg.id} msg={msg} />
+        ))}
+        {activeRun && (
+          <div className="chat-dock__step">
+            <span className="chat-dock__step-dots" aria-hidden="true">●●●</span>
+            <span>{stepText ?? "The agent is working…"}</span>
+          </div>
+        )}
+        {runError && (
+          <div className="chat-dock__error">Error: {runError}</div>
+        )}
+      </div>
+
+      <div className="chat-dock__composer">
+        {files.length > 0 && (
+          <div className="chat-dock__attach-strip">
+            {files.map((f) => (
+              <div key={f.preview} className="chat-dock__thumb">
+                {f.script ? (
+                  <span className="chat-dock__thumb-script" title={f.file.name}>
+                    📄<small>{f.file.name}</small>
+                  </span>
+                ) : (
+                  <img src={f.preview} alt={f.file.name} />
+                )}
+                <button
+                  type="button"
+                  className="chat-dock__thumb-remove"
+                  onClick={() => removeFile(f.preview)}
+                  aria-label={`Remove ${f.file.name}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <span className="chat-dock__attach-count">
+              {files.length}/{MAX_FILES}
+            </span>
+          </div>
+        )}
+        <div className="chat-dock__input-row">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,.txt,.md,.markdown,.srt,.vtt,.json,.csv,.fountain,.rtf,.docx"
+            multiple
+            hidden
+            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+              addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            className="chat-dock__attach-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={pending || uploading || activeRun !== null}
+            title="Attach images (up to 5)"
+            aria-label="Attach images"
+          >
+            📎
+          </button>
+          {selectedNodes.length > 0 && (
+            <div className="chat-dock__selected" aria-label="Selected nodes the AI will use">
+              <span>Using selected:</span>
+              {selectedNodes.map((n) => (
+                <span key={n.id} className="chat-dock__chip" title={n.title}>
+                  #{n.id}{n.title ? ` · ${n.title.slice(0, 18)}` : ""}
+                  <button type="button" onClick={() => dismiss(n.id)} aria-label={`Do not use #${n.id}`}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={textareaRef}
+            className="chat-dock__textarea"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              activeRun
+                ? "The agent is running…"
+                : "Describe your idea and ask for a video… (Enter to send)"
+            }
+            disabled={pending || uploading || activeRun !== null}
+            rows={2}
+          />
+          <button
+            type="button"
+            className="chat-dock__send"
+            onClick={() => void handleSend()}
+            disabled={!canSend}
+            aria-label="Send"
+          >
+            {uploading ? "…" : "➤"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

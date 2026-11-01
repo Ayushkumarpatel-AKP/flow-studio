@@ -1,0 +1,46 @@
+/* Canvas: node toolbar, colour tags, tools bar, empty state, context menu, undo bar. */
+.node-tools { display: none; gap: 2px; margin-right: 4px; }
+.node-card:hover .node-tools, .node-card--selected .node-tools { display: inline-flex; }
+.node-tool { width: 22px; height: 22px; line-height: 1; font-size: 12px; padding: 0; border-radius: 6px; display: inline-grid; place-items: center; }
+.node-tool--danger:hover:not(:disabled) { background: var(--accent) !important; color: #fff; }
+.node-card[data-tag="yellow"] { background: #fff3b0 !important; }
+.node-card[data-tag="pink"] { background: #ffd1e6 !important; }
+.node-card[data-tag="blue"] { background: #d3e4ff !important; }
+.node-card[data-tag="green"] { background: #d4f5df !important; }
+.node-card[data-tag] .node-tool:first-child { color: var(--accent); }
+.node-card--collapsed { min-height: 0; }
+.node-folded { margin-top: 6px; padding: 8px; font-size: 12px; color: var(--muted); text-align: center; border: 2px dashed var(--ink); border-radius: 8px; cursor: pointer; }
+.node-card[data-type="character"] .node-header { border-bottom: 3px solid var(--pop-pink); }
+.node-card[data-type="image"] .node-header { border-bottom: 3px solid var(--pop-blue); }
+.node-card[data-type="video"] .node-header { border-bottom: 3px solid var(--accent); }
+.node-card[data-type="prompt"] .node-header { border-bottom: 3px solid var(--success); }
+
+.canvas-tools { position: absolute; z-index: 8; top: 138px; right: 70px; display: flex; gap: 8px; align-items: flex-start; }
+.canvas-tools > button, .canvas-tools__menu > button { padding: 5px 12px; font-size: 14px; background: #fff; }
+.canvas-tools__menu { position: relative; }
+.canvas-tools__drop { display: none; position: absolute; right: 0; top: 100%; padding-top: 6px; z-index: 20; flex-direction: column; gap: 6px; width: 240px; }
+.canvas-tools__menu:hover .canvas-tools__drop, .canvas-tools__menu:focus-within .canvas-tools__drop { display: flex; }
+.canvas-tools__drop button { display: grid; text-align: left; padding: 8px 12px; background: #fff; }
+.canvas-tools__drop small { font-weight: 400; color: var(--muted); }
+
+.canvas-empty {
+  position: absolute; z-index: 7; left: 50%; top: 34%; transform: translate(-50%, -50%); width: min(760px, 92%); text-align: center;
+  background: #fff; border: 4px solid var(--ink); border-radius: 16px; box-shadow: 8px 8px 0 var(--ink); padding: 26px;
+}
+.canvas-empty h2 { font-family: var(--font-display); font-size: 38px; letter-spacing: .05em; text-transform: uppercase; margin: 0 0 6px; }
+.canvas-empty p { margin: 0 0 18px; }
+.canvas-empty__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; }
+.canvas-empty__grid button { display: grid; gap: 4px; padding: 14px 10px; background: var(--panel-high); box-shadow: 4px 4px 0 var(--ink); }
+.canvas-empty__grid span { font-size: 34px; }
+.canvas-empty__grid b { font-family: var(--font-display); font-weight: 400; font-size: 20px; letter-spacing: .05em; }
+.canvas-empty__grid small { font-weight: 400; color: var(--muted); }
+
+.ctx-menu { position: fixed; z-index: 10000; min-width: 170px; display: grid; gap: 4px; padding: 6px; background: #fff; border: 3px solid var(--ink); border-radius: 10px; box-shadow: var(--shadow); }
+.ctx-menu button, .ctx-menu a { text-align: left; padding: 6px 10px; border: 0; box-shadow: none; background: transparent; color: var(--ink); text-decoration: none; border-radius: 6px; font-size: 14px; }
+.ctx-menu button:hover, .ctx-menu a:hover { background: var(--pop-yellow); transform: none; box-shadow: none; }
+.ctx-menu .danger:hover { background: var(--accent); color: #fff; }
+
+.undo-bar { position: fixed; z-index: 10000; left: 50%; bottom: 86px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+  background: var(--ink); color: #fff; border: 3px solid var(--ink); border-radius: 99px; box-shadow: var(--shadow); }
+.undo-bar button { padding: 2px 12px; background: var(--pop-yellow); color: var(--ink); }
+.undo-bar .x { background: transparent; color: #fff; border: 0; box-shadow: none; }
